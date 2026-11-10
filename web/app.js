@@ -29,10 +29,22 @@
     for (let i = 1; i < xs.length; i++) if (x <= xs[i]) { const t = (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return ys[i - 1] + t * (ys[i] - ys[i - 1]); }
     return ys[ys.length - 1];
   }
+  // G1 v2 composite: equal-weight pillars of within-sector percentile ranks (missing -> neutral)
+  function compScore(m, f) {
+    const qs = D.meta.sq[f._sector] || {};
+    const pv = Object.values(m.pillars).map((comps) => comps.reduce((acc, [name, sign]) => {
+      const q = qs[name]; const v = q ? qpct(f[name], q) : null; return acc + sign * (v == null ? 0 : v - 0.5);
+    }, 0) / comps.length);
+    return pv.reduce((a, b) => a + b, 0) / pv.length;
+  }
   function scoreOne(key, f) {
-    const m = D.models[key]; let z = m.intercept;
-    m.features.forEach((name, i) => { const v = qpct(f[name], m.q[name]); z += m.coef[i] * (v == null ? 0 : v - 0.5); });
-    const p = 1 / (1 + Math.exp(-z));
+    const m = D.models[key]; let p;
+    if (m.type === "comp") p = compScore(m, f);
+    else {
+      let z = m.intercept;
+      m.features.forEach((name, i) => { const v = qpct(f[name], m.q[name]); z += m.coef[i] * (v == null ? 0 : v - 0.5); });
+      p = 1 / (1 + Math.exp(-z));
+    }
     const s = qpct(p, m.pq); const mids = m.cal.map((c) => c.mid);
     const o = { p_raw: p, pct: s };
     ["hit", "p10", "p50", "p90"].forEach((k) => (o[k] = interp(s, mids, m.cal.map((c) => c[k]))));
@@ -163,7 +175,7 @@
   }
   function renderBanner() {
     const mf = D.models["full_" + state.h], mp = D.models["price_" + state.h];
-    $("hzNote").innerHTML = `<b>${state.h}-month view.</b> Backtest verdict: full model <span class="${verdictClass(mf.verdict)}">${mf.verdict}</span> (rank IC ${mf.metrics.rank_ic.toFixed(3)}, ~${mf.metrics.independent_periods} independent periods); price-only <span class="${verdictClass(mp.verdict)}">${mp.verdict}</span>. Historical share of S&amp;P names beating SPY over ${state.h}m in the test window: ${pct(mf.metrics.base_rate)}. "P(beat SPY)" is the out-of-sample beat rate of stocks that sat in the same score bucket, so with no edge it stays close to that base rate.`;
+    $("hzNote").innerHTML = `<b>${state.h}-month view.</b> Backtest verdict: v2 composite <span class="${verdictClass(mf.verdict)}">${mf.verdict}</span> (rank IC ${mf.metrics.rank_ic.toFixed(3)}, ~${mf.metrics.independent_periods} independent periods); price-only <span class="${verdictClass(mp.verdict)}">${mp.verdict}</span>. Historical share of top-1000 names beating SPY over ${state.h}m in the test window: ${pct(mf.metrics.base_rate)}. "P(beat SPY)" is the out-of-sample beat rate of stocks that sat in the same score bucket, so with no edge it stays close to that base rate.`;
   }
   function renderTable() {
     const showNew = state.view === "NEW";
@@ -211,7 +223,8 @@
       return `<tr><td>${h}m</td><td>${x.test_start.slice(0, 7)} → ${x.test_end.slice(0, 7)}</td><td>${x.independent_periods}</td><td>${pct(x.base_rate)}</td><td>${x.auc.toFixed(3)}</td><td>${x.mean_date_auc != null ? x.mean_date_auc.toFixed(3) : "–"}</td><td>${x.rank_ic.toFixed(3)} <span class="muted">(t≈${x.rank_ic_t_overlap_adj.toFixed(1)})</span></td><td>${sgn(x.top_minus_bottom_decile)}</td><td>${pct(x.tmb_share_positive)}</td><td>${x.ece.toFixed(3)}</td><td class="${verdictClass(m.verdict)}">${m.verdict}</td></tr>`;
     }).join("");
     const head = `<tr><th>Horizon</th><th>Test window (rebalance dates)</th><th>~Indep. periods</th><th>Base rate</th><th>AUC (pooled)</th><th>AUC (avg per date)</th><th>Rank IC</th><th>Top−bottom decile excess</th><th>Months top &gt; bottom</th><th>Calib. error (ECE)</th><th>Verdict</th></tr>`;
-    $("bt").innerHTML = `<h3 class="small">Full model (price + SEC fundamentals)</h3><div class="tblwrap"><table>${head}${rowsOf("full")}</table></div>
+    $("bt").innerHTML = `<h3 class="small">G1 v2 composite (quality, value, low dilution, balance sheet; wide top-1000 universe, out-of-sample walk-forward)</h3><div class="tblwrap"><table>${head}${rowsOf("full")}</table></div>
+      <h3 class="small">Composite vs. alternatives on historical S&amp;P 500 members (rank IC, overlap-adjusted t in brackets)</h3><div class="tblwrap"><table><tr><th>Horizon</th><th>G1 v2 composite (live)</th><th>v2 learned ridge (not used)</th><th>G1 v1 logistic (retired)</th></tr>${HZ.map((h) => { const c = D.models["full_" + h].cmp; const f = (x, t) => `${x.toFixed(3)} <span class="muted">(t≈${t.toFixed(1)})</span>`; return `<tr><td>${h}m</td><td>${f(c.sp_A.rank_ic, c.sp_A.ic_t_ovl)}</td><td>${f(c.sp_B.rank_ic, c.sp_B.ic_t_ovl)}</td><td>${f(c.v1.rank_ic, c.v1.t)}</td></tr>`; }).join("")}</table></div>
       <h3 class="small">Price-only model (used for ETFs, foreign/multi-class filers without usable XBRL, and searched tickers)</h3><div class="tblwrap"><table>${head}${rowsOf("price")}</table></div>`;
   }
 

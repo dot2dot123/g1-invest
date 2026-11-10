@@ -38,3 +38,13 @@ All inputs ranked **within sector** per date (percentile − 0.5; missing → 0)
 
 ## Decision rule for redeploying the dashboard
 Redeploy v2 only if, on the S&P 500 subset or the wide universe, a v2 model (A or B) has rank IC overlap-adjusted **t > 2 at one or more horizons** AND at no horizon its rank IC is more than 0.03 below v1's. Otherwise the dashboard stays on v1 and results are reported.
+
+## Results and deviations (added after testing, 2026-11-10)
+
+Deviations from the plan above:
+- Model B's feature list drops v1's `ey_vs_sector` / `fcfy_vs_sector`: once every input is ranked within its sector, they carry the same information as `ey` / `fcfy`.
+- Calibration hit rates come from training-period rows of the same horizon, as planned. The deployed page instead maps each score decile to the out-of-sample test-window decile table. This is possible because Model A fits nothing.
+- Universe coverage: about 970 names per date on average. There were 217 names in Jan 2010 and 656 in Jan 2011 (thin price history). From 2012 on there are 1,000. Of those, S&P members with data number 296 in 2012 and 485 in 2026.
+- Residual survivorship bias: non-S&P names that delisted or were acquired before today are missing, because only today's SEC ticker list is free. Historical S&P members are included when Yahoo still serves their prices.
+
+Outcome: Model A met the decision rule. Its wide rank IC overlap-adjusted t was above 2 at 6, 12, 48 and 60m, and its S&P t was 2.47 at 60m. Its S&P rank IC beats v1 at every horizon. Model B did not reach t>2 anywhere and is not deployed. Most of the edge comes from 2020–2022. Full numbers are in cache/model_v2_results.json (local), and the page shows the table.

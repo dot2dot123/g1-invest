@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import numpy as np, pandas as pd
 from common import *
 import model as M
+import model_v2 as M2
 
 PCT = np.linspace(0, 1, 101)
 FUND_STATIC = ["roe", "roic", "gm", "om", "om_stab", "om_trend", "rev_g1", "rev_g3", "rev_accel", "sue", "lev", "intcov",
@@ -105,12 +106,54 @@ def main():
         for k in ("hit", "p10", "p50", "p90"):
             out[k] = float(np.interp(s, mids, [c[k] for c in cal]))
         return out
+    # ---- G1 v2: pre-registered composite (Model A), replaces the v1 full model for names with fundamentals ----
+    res2 = {int(k): v for k, v in json.load(open(CACHE / "model_v2_results.json")).items()}
+    p2 = pd.read_parquet(CACHE / "panel_v2.parquet")
+    cur2 = p2[p2.date == p2.date.max()].set_index("ticker")
+    U2 = cur2[cur2.univ]
+    sq = {}
+    for sec, g in U2.groupby("sector"):
+        sq[sec] = {f: ([float(x) for x in np.nanquantile(g[f].astype(float), PCT)] if g[f].notna().sum() >= 5 else None) for f in M2.A_FEATS}
+    pillars = {k: [[f, s_] for f, s_ in v] for k, v in M2.PILLARS.items()}
+    def comp_score(f, sec):
+        qs = sq.get(sec) or {}
+        pv = []
+        for comps in pillars.values():
+            vals = []
+            for name, sign in comps:
+                q = qs.get(name); v = qpct(nz(f.get(name)), q) if q else None
+                vals.append(sign * ((v - 0.5) if v is not None else 0.0))
+            pv.append(sum(vals) / len(vals))
+        return sum(pv) / len(pv)
+    for t in feats_by:  # A inputs from the v2 panel (same PIT code), sector tag for the browser
+        if t in cur2.index:
+            for k in M2.A_FEATS: feats_by[t][k] = nz(cur2.loc[t].get(k))
+            feats_by[t]["_sector"] = cur2.loc[t, "sector"]
+        else:
+            feats_by[t]["_sector"] = cur.loc[t, "sector"]
+    a_now = [comp_score({k: nz(U2.loc[t].get(k)) for k in M2.A_FEATS}, U2.loc[t, "sector"]) for t in U2.index]
+    pqA = [float(x) for x in np.quantile(a_now, PCT)]
+    for h in HORIZONS:
+        r2 = res2[h]; oos2 = pd.read_parquet(CACHE / f"oos_v2_{h}.parquet").rename(columns={"A": "p"})
+        w, spm, v1m = r2["wide"]["A"], r2["sp500"]["A"], res[f"full_{h}"]["metrics"]
+        met = {"test_start": r2["test_window"][0], "test_end": r2["test_window"][1], "independent_periods": round(w["dates"] / h, 1),
+               "base_rate": w["base_rate"], "auc": w["auc"], "mean_date_auc": None, "rank_ic": w["rank_ic"],
+               "rank_ic_t_overlap_adj": w["ic_t_ovl"], "top_minus_bottom_decile": w["tmb"], "tmb_share_positive": w["tmb_pos"], "ece": w["ece"]}
+        models[f"full_{h}"] = {"type": "comp", "kind": "full", "h": h, "pillars": pillars, "pq": pqA, "cal": decile_table(oos2),
+                               "cal_window": r2["test_window"], "metrics": met, "verdict": verdict(met),
+                               "cmp": {"sp_A": spm, "sp_B": r2["sp500"]["B"], "wide_B": r2["wide"]["B"],
+                                       "v1": {"auc": v1m["auc"], "rank_ic": v1m["rank_ic"], "t": v1m["rank_ic_t_overlap_adj"], "tmb": v1m["top_minus_bottom_decile"]}}}
+    def comp_calib(h, f):
+        m = models[f"full_{h}"]; a = comp_score(f, f.get("_sector")); s = qpct(a, m["pq"]); mids = [c["mid"] for c in m["cal"]]
+        o = {"p_raw": a, "pct": s}
+        for k in ("hit", "p10", "p50", "p90"): o[k] = float(np.interp(s, mids, [c[k] for c in m["cal"]]))
+        return o
     tick = {}
     for t, f in feats_by.items():
         kind = "full" if has_fund[t] else "price"
         sc = {}
         for h in HORIZONS:
-            sc[h] = calib(f"{kind}_{h}", logit_p(f"{kind}_{h}", f))
+            sc[h] = comp_calib(h, f) if kind == "full" else calib(f"{kind}_{h}", logit_p(f"{kind}_{h}", f))
         raw = latest_raw.get(t) or {}
         tick[t] = {"kind": kind, "sector": cur.loc[t, "sector"], "px": nz(cur.loc[t, "px_close"]),
                    "f": f, "raw": {k: nz(raw.get(k)) for k in ("rev", "ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj")},
@@ -131,8 +174,8 @@ def main():
     spy = pd.read_parquet(PRICES / "SPY.parquet")["adj"].resample("W-FRI").last().dropna().iloc[-262:]
     spy_keys = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy.index]
     meta = {"spy_w": {"keys": spy_keys, "a": [round(float(x), 4) for x in spy.values]}, "built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
-            "horizons": HORIZONS, "secmed": secmed, "missing_sp": missing_sp,
-            "n_sp": len(sp), "universe_note": "Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
+            "horizons": HORIZONS, "secmed": secmed, "sq": sq, "missing_sp": missing_sp,
+            "n_sp": len(sp), "universe_note": "Composite ranks within SIC sector against the current top-1000 US-listed universe. Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
     full = {"meta": meta, "models": models, "tick": tick, "books": bk, "book_label": BOOK_LABEL}
     out = ROOT / "build" / "data"; out.mkdir(parents=True, exist_ok=True)
     json.dump(full, open(out / "main.json", "w"), separators=(",", ":"))

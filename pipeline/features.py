@@ -163,6 +163,9 @@ def fund_features(t, F, close_t, split_after):
     res["dil_1y"] = sh_adj / (sh4 * adj(365)) - 1 if sh4 and sh4 > 0 else np.nan
     res["dil_3y"] = sh_adj / (sh12 * adj(1095)) - 1 if sh12 and sh12 > 0 else np.nan
     res["accruals"] = (ni - cfo) / assets if assets and assets > 0 else np.nan
+    res["gpa"] = gp / assets if assets and assets > 0 else np.nan
+    res["roa"] = ni / assets if assets and assets > 0 else np.nan
+    res["mcap"] = mcap
     raw = dict(rev=rev, gp=gp, ebit=ebit, ni=ni, cfo=cfo, capex=capex, intexp=ie, assets=assets, equity=eq, cash=cash0,
                debt=debt, shares_adj=sh_adj, mcap=mcap)
     return raw, res
