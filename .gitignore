@@ -1,0 +1,13 @@
+# Cleartext data, holdings, predictions and caches never get published
+cache/
+build/
+*.csv
+*.parquet
+data/
+.venv/
+__pycache__/
+.env
+.env.*
+**/secrets/
+node_modules/
+package-lock.json

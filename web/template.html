@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>__TITLE__</title><style>__CSS__</style></head>
+<body data-page="__PAGE__">
+<header><div class="wrap" style="padding:0">
+  <div class="row" style="justify-content:space-between">
+    <div><h1>__H1__</h1><div class="sub" id="asof"></div></div>
+    <div class="row"><button id="refresh" title="Fetch live prices from Yahoo in your browser and re-score with the embedded model">↻ Refresh prices</button></div>
+  </div>
+  <div class="sub" id="refStatus">Showing scores computed at build time. Refresh pulls live prices (Yahoo, AllOrigins fallback) and re-scores in your browser.</div>
+</div></header>
+<div class="wrap">
+  <div class="disc"><b>Personal research for Gary A only — not financial advice.</b> G1 is a statistical experiment. Its backtest shows little or no reliable edge at most horizons (details below). Do not trade on these numbers alone.</div>
+  <div class="card">
+    <div class="row"><input type="text" id="q" placeholder="Search any ticker, e.g. CRWD" style="flex:1;max-width:260px" autocapitalize="characters"><button id="go">Score</button>
+    <span class="small muted">Live fetch + score at all horizons; pin to your Research list (saved in this browser only).</span></div>
+    <div id="searchOut"></div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="tabs hz" id="hz"></div>
+  <div class="small muted" id="hzNote" style="margin:4px 0 8px"></div>
+  <div class="row" style="justify-content:space-between;margin:6px 0"><input type="text" id="flt" placeholder="Filter list" style="max-width:200px"><span class="small muted" id="count"></span></div>
+  <div class="tblwrap" id="tbl"></div>
+  <p class="small muted">Danelfin AI = Danelfin's AI Score (1–10) from the Nov 8 exports, shown for comparison only. G1 P(beat SPY) = share of stocks in the same G1 score bucket that beat SPY (total return) in the walk-forward test. Band = 10th / 50th / 90th percentile of those stocks' excess return vs SPY over the horizon. "price-only" = no usable SEC fundamentals bundled.</p>
+  <h2>How good is it? (out-of-sample walk-forward backtest)</h2>
+  <div id="bt"></div>
+  <details class="card"><summary>Method, data and limitations</summary><div class="small">
+  <p><b>Universe & survivorship.</b> Backtest uses historical S&amp;P 500 membership at each month-end (fja05680/sp500 dataset, through Aug 2026), not today's list. Delisted names are kept when Yahoo still has their prices; many acquired/bankrupt names are no longer on Yahoo (about half of members are covered in 2005, ~73% in 2015, ~97% in 2025), so some survivorship bias remains. If a stock stops trading mid-horizon, its proceeds are assumed to sit in SPY. Today's scoring universe = current S&amp;P 500 (Wikipedia table at build) plus every ticker in the five books.</p>
+  <p><b>No look-ahead.</b> Fundamentals come from SEC EDGAR companyfacts (XBRL). For each period only the <i>first-filed</i> value is used (no restatements), and it becomes usable 2 days after its filing date. Values older than ~18 months are treated as missing. Training for a test year only uses samples whose full forward window ended before that year starts (purged expanding window, yearly retrain).</p>
+  <p><b>Features.</b> Short horizons (6m, 12m): 12-1 / 6-1 / 3-month momentum, 1-month reversal, distance from 52-week high, 40-week trend, volatility, beta; earnings-surprise proxy (standardized year-over-year change in quarterly net income — free consensus revisions data does not exist, so this stands in for revisions); revenue acceleration, margin trend, revenue growth, EBIT/EV, FCF yield, dilution; 12m adds ROIC, gross margin, accruals, valuation vs sector and vs own 5-year history. Long horizons (24–60m): quality (ROE, ROIC, margins, margin stability), FCF yield, EBIT/EV, sales/EV, book/price, 1y and 3y revenue growth, margin trend, leverage, interest coverage, 1y and 3y dilution, accruals, valuation vs own history and vs sector, plus long-run price risk (volatility, beta, 3y max drawdown, 36-12 momentum). Sentiment: no free point-in-time source; the 52-week-high distance and trend act as crude proxies. Each feature is turned into a cross-sectional percentile; one L2 logistic regression per horizon predicts "beats SPY".</p>
+  <p><b>Overlap.</b> Monthly rebalance dates with 6–60 month windows overlap heavily; "independent periods" ≈ test months ÷ horizon. 48m and 60m have about one independent period, and their training windows start in 2010 (when XBRL begins), so they are not meaningful. t-statistics are scaled for overlap.</p>
+  <p><b>Refresh.</b> The Refresh button pulls 5 years of weekly prices per name from Yahoo directly in your browser (AllOrigins proxy if Yahoo blocks it), recomputes momentum/volatility/drawdown/beta and price-based valuation (EBIT/EV, FCF yield, sales/EV, book/price, valuation vs history and sector) with the bundled fundamentals, and re-scores with the embedded model. Fundamentals and the models themselves only change when Gary asks for a rebuild in chat. Nothing runs on a schedule.</p>
+  <p><b>Known gaps.</b> Some names have no usable fundamentals (ETFs; multi-class filers that only report share counts by class, e.g. V, STZ; XOM's current SEC entity has too little history; BRK.B) and use the price-only model. Banks/insurers lack EBIT, so those features read neutral for them. Sectors come from SEC SIC codes.</p>
+  </div></details>
+  <p class="small muted">G1 · Gary A · personal use only · not financial advice.</p>
+</div>
+<script id="g1data" type="application/json">__DATA__</script>
+<script>__JS__</script>
+</body></html>
