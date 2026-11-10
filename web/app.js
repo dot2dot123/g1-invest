@@ -86,16 +86,22 @@
   }
 
   // ---------- Yahoo fetch (direct, then AllOrigins CORS fallback) ----------
-  function chartUrl(sym) { return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5y&interval=1wk&includeAdjustedClose=true`; }
+  function chartUrl(sym, host) { return `https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=5y&interval=1wk&includeAdjustedClose=true`; }
   async function fetchChart(sym) {
-    const direct = chartUrl(sym.replace(".", "-"));
-    const candidates = [direct, `https://api.allorigins.win/raw?url=${encodeURIComponent(direct)}`, `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(direct)}`];
+    const s = sym.replace(".", "-");
+    const q1 = chartUrl(s, "query1"), q2 = chartUrl(s, "query2");
+    // Browsers on GitHub Pages are usually CORS-blocked from Yahoo; fall back to the AllOrigins proxy (raw, then JSON wrapper).
+    const AO = "https://api.allorigins.win";
+    const candidates = [q1, `${AO}/raw?url=${encodeURIComponent(q2)}`, `${AO}/get?url=${encodeURIComponent(q2)}`,
+      `${AO}/raw?url=${encodeURIComponent(q1)}`, `${AO}/get?url=${encodeURIComponent(q1)}`];
     let lastErr;
     for (const url of candidates) {
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), url === q1 ? 8000 : 25000);
+        const res = await fetch(url, { cache: "no-store", signal: ctl.signal }); clearTimeout(timer);
         if (!res.ok) throw new Error(String(res.status));
-        const data = await res.json();
+        let data = await res.json();
+        if (url.includes("/get?url=")) data = JSON.parse(data.contents);  // AllOrigins JSON wrapper
         const r = data?.chart?.result?.[0];
         if (!r || !r.timestamp) throw new Error("no data");
         const adj = r.indicators?.adjclose?.[0]?.adjclose || r.indicators?.quote?.[0]?.close;
@@ -240,7 +246,7 @@
     if (state.busy) return; state.busy = true; $("refresh").disabled = true;
     const tickers = [...new Set(rowsForView().map((r) => r.t))];
     let ok = 0, done = 0; const failed = [];
-    $("refStatus").textContent = `Refreshing ${tickers.length} names from Yahoo…`;
+    $("refStatus").textContent = `Refreshing ${tickers.length} names from Yahoo…` + (tickers.length > 60 ? " (large list through a free proxy: this can take 10+ minutes; keep the tab open)" : "");
     try { state.spyW = null; await getSpy(); } catch (e) { $("refStatus").textContent = "Could not reach Yahoo (direct or AllOrigins) for SPY. Showing shipped scores."; state.busy = false; $("refresh").disabled = false; return; }
     const queue = tickers.slice();
     async function worker() {
