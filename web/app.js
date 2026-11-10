@@ -113,7 +113,12 @@
     throw lastErr || new Error("fetch failed");
   }
   async function getSpy() {
-    if (!state.spyW) { const s = await fetchChart("SPY"); state.spyW = s; state.spyMap = new Map(s.keys.map((k, i) => [k, s.a[i]])); }
+    if (!state.spyW) {
+      let s = null;
+      for (let k = 0; k < 2 && !s; k++) { try { s = await fetchChart("SPY"); } catch (_) {} }
+      if (!s) { s = { keys: D.meta.spy_w.keys, a: D.meta.spy_w.a, meta: {}, shipped: true }; }  // fallback: SPY weekly bundled at build
+      state.spyW = s; state.spyMap = new Map(s.keys.map((k, i) => [k, s.a[i]]));
+    }
     return state.spyW;
   }
   async function liveScore(t) {
@@ -247,12 +252,12 @@
     const tickers = [...new Set(rowsForView().map((r) => r.t))];
     let ok = 0, done = 0; const failed = [];
     $("refStatus").textContent = `Refreshing ${tickers.length} names from Yahoo…` + (tickers.length > 60 ? " (large list through a free proxy: this can take 10+ minutes; keep the tab open)" : "");
-    try { state.spyW = null; await getSpy(); } catch (e) { $("refStatus").textContent = "Could not reach Yahoo (direct or AllOrigins) for SPY. Showing shipped scores."; state.busy = false; $("refresh").disabled = false; return; }
+    state.spyW = null; await getSpy();
     const queue = tickers.slice();
     async function worker() {
       while (queue.length) {
         const t = queue.shift();
-        try { const r = await liveScore(t); state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at };
+        try { let r = null; try { r = await liveScore(t); } catch (_) { r = await liveScore(t); } state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at };
           const rr = state.research.find((x) => x.t === t); if (rr) Object.assign(rr, { s: r.s, kind: r.kind, px: r.px, at: r.at.toISOString() });
           ok++; } catch (_) { failed.push(t); }
         done++; if (done % 10 === 0 || done === tickers.length) $("refStatus").textContent = `Refreshed ${done}/${tickers.length}…`;
@@ -261,7 +266,7 @@
     await Promise.all(Array.from({ length: 6 }, worker));
     saveResearch();
     state.refreshedAt = new Date(); state.busy = false; $("refresh").disabled = false;
-    $("refStatus").textContent = `Live: ${ok}/${tickers.length} updated ${laTime(state.refreshedAt)}` + (failed.length ? ` · failed: ${failed.slice(0, 12).join(", ")}${failed.length > 12 ? "…" : ""} (shipped scores kept)` : "");
+    $("refStatus").textContent = `Live: ${ok}/${tickers.length} updated ${laTime(state.refreshedAt)}` + (state.spyW.shipped ? " (SPY from bundled history; beta slightly stale)" : "") + (failed.length ? ` · failed: ${failed.slice(0, 12).join(", ")}${failed.length > 12 ? "…" : ""} (shipped scores kept)` : "");
     renderStatus(); renderTable();
   }
 

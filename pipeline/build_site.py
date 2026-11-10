@@ -128,7 +128,9 @@ def main():
                          "shares": nz(r.get("Shares")) if b == "NEW" else None, "scored": t in tick})
         bk[b] = rows
     la = ZoneInfo("America/Los_Angeles")
-    meta = {"built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
+    spy = pd.read_parquet(PRICES / "SPY.parquet")["adj"].resample("W-FRI").last().dropna().iloc[-262:]
+    spy_keys = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy.index]
+    meta = {"spy_w": {"keys": spy_keys, "a": [round(float(x), 4) for x in spy.values]}, "built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
             "horizons": HORIZONS, "secmed": secmed, "missing_sp": missing_sp,
             "n_sp": len(sp), "universe_note": "Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
     full = {"meta": meta, "models": models, "tick": tick, "books": bk, "book_label": BOOK_LABEL}
