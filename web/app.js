@@ -271,5 +271,6 @@
   $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
   $("flt").addEventListener("input", (e) => { state.filter = e.target.value; renderTable(); });
   renderTabs(); renderBanner(); renderStatus(); renderTable(); renderBacktest();
+  $("gaps").textContent = Object.keys(D.tick).filter((t) => D.tick[t].kind === "price").sort().join(", ") || "none";
   window.G1 = { qpct, scoreAll, priceFeatures, fundFeatures, D, state }; // for local verification
 })();
