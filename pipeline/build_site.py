@@ -5,6 +5,7 @@ import numpy as np, pandas as pd
 from common import *
 import model as M
 import model_v2 as M2
+import style as ST
 
 PCT = np.linspace(0, 1, 101)
 FUND_STATIC = ["roe", "roic", "gm", "om", "om_stab", "om_trend", "rev_g1", "rev_g3", "rev_accel", "sue", "lev", "intcov",
@@ -148,6 +149,33 @@ def main():
         o = {"p_raw": a, "pct": s}
         for k in ("hit", "p10", "p50", "p90"): o[k] = float(np.interp(s, mids, [c[k] for c in m["cal"]]))
         return o
+    # ---- style boxes: Buffett & Munger rules + Magic 15 pillars (display only; see docs/PREREGISTRATION_STYLE_SCORES.md) ----
+    ph = ST.add_hist(p2[p2.date >= p2.date.max() - pd.DateOffset(months=62)])
+    hist_now = ph[ph.date == ph.date.max()].set_index("ticker")[["roe_med5", "roe_min5", "roa_min5"]]
+    tsy_now = float(ST.tsy_at([p2.date.max()])[0])
+    mq = {f: [float(x) for x in np.nanquantile(U2[f].astype(float), PCT)] for f in ST.MAGIC_FEATS}
+    def bm_static(t, f):
+        row = pd.DataFrame([{**{k: f.get(k) for k in ("lev", "om_stab", "gm", "dil_3y", "fcfy")},
+                             **({k: nz(hist_now.loc[t, k]) for k in hist_now.columns} if t in hist_now.index else {"roe_med5": None, "roe_min5": None, "roa_min5": None})}]).astype(float)
+        c = ST.bm_components(row, tsy_now).iloc[0].to_dict()
+        c.pop("fcf_vs_treasury"); return {k: float(v) for k, v in c.items()}, {k: nz(row.iloc[0][k]) for k in ("roe_med5", "roe_min5", "roa_min5")}
+    def bm_total(st, fcfy):
+        fv = 1.0 if fcfy is None else (2.0 if fcfy >= tsy_now else (1.0 if fcfy >= .6 * tsy_now else 0.0))
+        return sum(st.values()) + fv, fv
+    def magic(f):
+        out = {}
+        for k, comps in ST.MAGIC.items():
+            vals = []
+            for name, sign in comps:
+                v = qpct(nz(f.get(name)), mq[name])
+                vals.append(.5 if v is None else (v if sign > 0 else 1 - v))
+            out[k] = sum(vals) / len(vals)
+        return 10 * sum(out.values()) / len(out), out
+    st_res = json.load(open(CACHE / "style_test_results.json"))
+    style_bt = {sc: {h: {"wide": {k: st_res["basic"][str(h)]["wide"][sc][k] for k in ("ic", "t", "tmb", "auc")},
+                         "sp": {k: st_res["basic"][str(h)]["sp500"][sc][k] for k in ("ic", "t")},
+                         "partial_ic": st_res[sc][str(h)]["redundancy"]["partial_ic"], "partial_t": st_res[sc][str(h)]["redundancy"]["partial_t"],
+                         "corr_A": st_res[sc][str(h)]["redundancy"]["corr_with_A"]} for h in HORIZONS} for sc in ("BM", "M15")}
     tick = {}
     for t, f in feats_by.items():
         kind = "full" if has_fund[t] else "price"
@@ -155,7 +183,11 @@ def main():
         for h in HORIZONS:
             sc[h] = comp_calib(h, f) if kind == "full" else calib(f"{kind}_{h}", logit_p(f"{kind}_{h}", f))
         raw = latest_raw.get(t) or {}
-        tick[t] = {"kind": kind, "sector": cur.loc[t, "sector"], "px": nz(cur.loc[t, "px_close"]),
+        sty = None
+        if kind == "full":
+            bst, hv = bm_static(t, f); bmt, fv = bm_total(bst, f.get("fcfy")); mt, mpil = magic(f)
+            sty = {"bm_st": bst, "bm": bmt, "bm_fcf": fv, "hist": hv, "m15": mt, "m15p": mpil}
+        tick[t] = {"sty": sty, "kind": kind, "sector": cur.loc[t, "sector"], "px": nz(cur.loc[t, "px_close"]),
                    "f": f, "raw": {k: nz(raw.get(k)) for k in ("rev", "ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj")},
                    "hist": {"ey": nz(cur.loc[t].get("ey_hist_med")), "fcfy": nz(cur.loc[t].get("fcfy_hist_med"))},
                    "s": sc, "sp": t in spcur,
@@ -174,7 +206,9 @@ def main():
     spy = pd.read_parquet(PRICES / "SPY.parquet")["adj"].resample("W-FRI").last().dropna().iloc[-262:]
     spy_keys = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy.index]
     meta = {"spy_w": {"keys": spy_keys, "a": [round(float(x), 4) for x in spy.values]}, "built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
-            "horizons": HORIZONS, "secmed": secmed, "sq": sq, "missing_sp": missing_sp,
+            "horizons": HORIZONS, "secmed": secmed, "sq": sq, "mq": mq, "tsy": tsy_now,
+            "magic": {"name": "Magic 15", "pillars": {k: [[a, b] for a, b in v] for k, v in ST.MAGIC.items()}, "labels": ST.MAGIC_LABEL},
+            "style_bt": style_bt, "style_verdict": {"BM": "KEEP", "M15": "SIMPLIFY"}, "missing_sp": missing_sp,
             "n_sp": len(sp), "universe_note": "Composite ranks within SIC sector against the current top-1000 US-listed universe. Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
     full = {"meta": meta, "models": models, "tick": tick, "books": bk, "book_label": BOOK_LABEL}
     out = ROOT / "build" / "data"; out.mkdir(parents=True, exist_ok=True)

@@ -39,3 +39,12 @@ td .nm{display:block;color:var(--mut);font-size:11px;max-width:180px;overflow:hi
 .err{color:var(--bad)}
 details summary{cursor:pointer;color:var(--acc)}
 @media (max-width:640px){header{position:static}.hide-sm{display:none}th,td{padding:6px 5px}h1{font-size:16px}}
+
+.ag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid transparent}
+.ag-agree{background:rgba(34,197,94,.18);color:#15803d;border-color:rgba(34,197,94,.5)}
+.ag-disagree{background:rgba(239,68,68,.15);color:#b91c1c;border-color:rgba(239,68,68,.5)}
+.ag-neutral,.ag-na{background:rgba(148,163,184,.18);color:#64748b;border-color:rgba(148,163,184,.4)}
+.hzc{display:inline-flex;flex-direction:column;align-items:center;gap:2px}
+.dot{display:block;width:7px;height:7px;border-radius:50%;font-style:normal}
+.dot.ag-agree{background:#22c55e}.dot.ag-disagree{background:#ef4444}.dot.ag-neutral,.dot.ag-na{background:#cbd5e1}
+.sty{display:inline-block;min-width:30px;text-align:center;padding:1px 6px;border-radius:6px;font-weight:600;cursor:help}

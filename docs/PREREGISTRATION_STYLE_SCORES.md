@@ -55,3 +55,22 @@ R&D intensity is not in the free panel, so it is left out.
 - **DROP:** otherwise.
 
 Either way the boxes are display-only and never feed G1's P(beat SPY). The page states the verdict.
+
+## Results (added after testing, 2026-11-10)
+
+Rank IC (overlap-adjusted t); the window is month-ends 2014-01 through the last date with a known outcome.
+
+| h | B&M wide | B&M S&P | B&M partial vs A | M15 wide | M15 S&P | M15 partial vs A |
+|---|---|---|---|---|---|---|
+| 6m | .053 (3.14) | .036 (1.53) | .040 (2.28) | .041 (1.85) | .022 (0.74) | .025 (0.98) |
+| 12m | .070 (2.89) | .051 (1.53) | .052 (1.98) | .047 (1.70) | .031 (0.83) | .025 (0.73) |
+| 24m | .096 (2.78) | .076 (1.66) | .067 (1.84) | .068 (2.09) | .056 (1.40) | .034 (0.78) |
+| 36m | .117 (4.18) | .101 (2.62) | .085 (2.37) | .100 (2.73) | .090 (2.08) | .064 (1.27) |
+| 48m | .137 (3.73) | .119 (1.98) | .100 (1.86) | .121 (2.69) | .113 (2.10) | .079 (1.22) |
+| 60m | .135 (3.36) | .122 (1.68) | .097 (1.49) | .107 (2.12) | .106 (1.69) | .061 (0.86) |
+
+Verdicts under the pre-registered rule:
+- **B&M: KEEP.** Its strongest rules are no dilution and FCF yield vs the 10y Treasury; low leverage adds roughly nothing.
+- **Magic 15: SIMPLIFY.** Dropping deep_value or durable_growth raises IC at all six horizons. The compounders pillar alone has t > 3 at every horizon. Deep value and macro trend correlate at −0.23, so those two styles partly cancel. The simplified form is a recommendation only and is not deployed unseen.
+
+Full output: cache/style_test_results.json (local).

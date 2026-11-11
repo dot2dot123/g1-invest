@@ -50,6 +50,45 @@
     ["hit", "p10", "p50", "p90"].forEach((k) => (o[k] = interp(s, mids, m.cal.map((c) => c[k]))));
     return o;
   }
+  // ---------- style boxes (display only; rule-based proxies, see methodology) ----------
+  const MAGIC_NAME = D.meta.magic.name;  // rename here or in pipeline/build_site.py
+  function styleOf(t, f) {
+    const T = D.tick[t]; if (!T || !T.sty) return null;
+    const st = T.sty.bm_st, tsy = D.meta.tsy, fc = f ? f.fcfy : null;
+    const fv = fc == null || !isFinite(fc) ? 1 : fc >= tsy ? 2 : fc >= 0.6 * tsy ? 1 : 0;
+    const bm = Object.values(st).reduce((a, b) => a + b, 0) + fv;
+    const mp = {};
+    Object.entries(D.meta.magic.pillars).forEach(([k, comps]) => {
+      mp[k] = comps.reduce((acc, [name, sign]) => { const v = qpct(f ? f[name] : null, D.meta.mq[name]); return acc + (v == null ? 0.5 : sign > 0 ? v : 1 - v); }, 0) / comps.length;
+    });
+    const m15 = 10 * Object.values(mp).reduce((a, b) => a + b, 0) / Object.keys(mp).length;
+    return { bm, bm_st: Object.assign({}, st, { fcf_vs_treasury: fv }), m15, m15p: mp, fcfy: fc };
+  }
+  function agree(s, ai) {
+    if (ai == null || s == null || s.pct == null) return null;
+    const g = s.pct >= 0.8 ? 1 : s.pct <= 0.2 ? -1 : 0, d = ai >= 7 ? 1 : ai <= 4 ? -1 : 0;
+    if (!g || !d) return "neutral"; return g === d ? "agree" : "disagree";
+  }
+  function agreePill(a, h) {
+    if (!a) return `<span class="ag ag-na" title="No Danelfin AI score for this name">—</span>`;
+    const lbl = { agree: "Agree", disagree: "Disagree", neutral: "Neutral" }[a];
+    return `<span class="ag ag-${a}" title="${h}m: G1 score in top/bottom 20% vs Danelfin AI ≥7 bullish / ≤4 bearish">${lbl}</span>`;
+  }
+  const BM_LBL = { durable_roe: "Durable ROE (5y median ≥15% & min ≥10%)", low_leverage: "Low leverage (debt/assets ≤30%)", stable_margins: "Stable operating margins",
+    consistent_profits: "Profitable every year (5y min ROA > 0)", gross_margin: "Gross margin moat (≥40% = 2, ≥25% = 1)", share_count: "No net dilution over 3y",
+    fcf_vs_treasury: "Owner-earnings (FCF) yield vs 10y Treasury" };
+  const BM_MAX = { durable_roe: 2, low_leverage: 1, stable_margins: 1, consistent_profits: 1, gross_margin: 2, share_count: 1, fcf_vs_treasury: 2 };
+  function bmBox(y) {
+    if (!y) return `<span class="muted" title="Needs SEC fundamentals">—</span>`;
+    const tip = Object.entries(y.bm_st).map(([k, v]) => `${BM_LBL[k]}: ${v}/${BM_MAX[k]}`).join("\n") + `\n(10y Treasury ${(D.meta.tsy * 100).toFixed(2)}%; missing data = half points)\nRule-based proxy, not Buffett's or Munger's view.`;
+    return `<span class="sty" style="background:${scoreColor(y.bm)}" title="${esc(tip)}">${y.bm.toFixed(1)}</span>`;
+  }
+  function m15Box(y) {
+    if (!y) return `<span class="muted" title="Needs SEC fundamentals">—</span>`;
+    const tip = Object.entries(y.m15p).map(([k, v]) => `${D.meta.magic.labels[k]}: ${(v * 10).toFixed(1)}/10`).join("\n") + `\nRule-based proxy of published principles, not these investors' views.`;
+    return `<span class="sty" style="background:${scoreColor(y.m15)}" title="${esc(tip)}">${y.m15.toFixed(1)}</span>`;
+  }
+  function scoreColor(x) { const g = Math.max(-1, Math.min(1, (x - 5) / 3)); return g >= 0 ? `rgba(34,197,94,${0.12 + 0.45 * g})` : `rgba(239,68,68,${0.12 - 0.45 * g})`; }
   function scoreAll(kind, f) { const s = {}; HZ.forEach((h) => (s[h] = scoreOne(kind + "_" + h, f))); return s; }
 
   // weekly-bar price features (same definitions as pipeline/features.py)
@@ -141,7 +180,7 @@
     const px = c.meta.regularMarketPrice;
     let kind = "price", f = pf;
     if (T && T.kind === "full") { kind = "full"; f = fundFeatures(t, px, Object.assign({}, T.f, pf)); }
-    return { s: scoreAll(kind, f), kind, px, chart: c, at: new Date() };
+    return { s: scoreAll(kind, f), kind, px, chart: c, at: new Date(), sty: styleOf(t, f) };
   }
 
   // ---------- helpers ----------
@@ -151,7 +190,7 @@
   const laTime = (d) => d.toLocaleString("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) + " PT";
   function verdictClass(v) { return v.startsWith("some") ? "v-some" : v.startsWith("weak") ? "v-weak" : v.startsWith("negative") ? "v-neg" : "v-none"; }
   function probColor(x, base) { const d = x - base; const g = Math.max(-1, Math.min(1, d / 0.06)); return g >= 0 ? `rgba(34,197,94,${0.12 + 0.5 * g})` : `rgba(239,68,68,${0.12 - 0.5 * g})`; }
-  function scoresFor(t) { const L = state.live[t]; if (L) return { s: L.s, kind: L.kind, px: L.px, live: true }; const T = D.tick[t]; return T ? { s: T.s, kind: T.kind, px: T.px, live: false } : null; }
+  function scoresFor(t) { const L = state.live[t]; if (L) return { s: L.s, kind: L.kind, px: L.px, sty: L.sty, live: true }; const T = D.tick[t]; return T ? { s: T.s, kind: T.kind, px: T.px, sty: T.sty, live: false } : null; }
   function loadResearch() { try { return JSON.parse(localStorage.getItem(LS_KEY) || "[]"); } catch (_) { return []; } }
   function saveResearch() { localStorage.setItem(LS_KEY, JSON.stringify(state.research)); }
 
@@ -163,6 +202,7 @@
     v.push(["RES", "Research"]);
     return v;
   }
+  function aiLookup() { const aiOf = {}; Object.values(D.books).forEach((rows) => rows.forEach((r) => { if (r.ai != null && aiOf[r.t] == null) aiOf[r.t] = r.ai; })); return aiOf; }
   function rowsForView() {
     const aiOf = {}; Object.values(D.books).forEach((rows) => rows.forEach((r) => { if (r.ai != null && aiOf[r.t] == null) aiOf[r.t] = r.ai; }));
     if (state.view === "SP") return Object.keys(D.tick).filter((t) => D.tick[t].sp).map((t) => ({ t, name: D.tick[t].name, ai: aiOf[t] }));
@@ -180,7 +220,7 @@
   function renderTable() {
     const showNew = state.view === "NEW";
     let rows = rowsForView().map((r) => {
-      const sc = r.research ? (state.live[r.t] ? scoresFor(r.t) : (r.research.s ? { s: r.research.s, kind: r.research.kind, px: r.research.px, live: false } : null)) : scoresFor(r.t);
+      const sc = r.research ? (state.live[r.t] ? scoresFor(r.t) : (r.research.s ? { s: r.research.s, kind: r.research.kind, px: r.research.px, sty: r.research.sty || D.tick[r.t]?.sty || null, live: false } : null)) : scoresFor(r.t);
       return Object.assign(r, { sc });
     });
     const f = state.filter.trim().toUpperCase();
@@ -189,23 +229,26 @@
       const s = r.sc?.s?.[state.h];
       switch (state.sortKey) {
         case "t": return r.t; case "ai": return r.ai ?? -1; case "pct": return s?.pct ?? -1; case "p50": return s?.p50 ?? -9;
+        case "bm": return r.sc?.sty?.bm ?? -1; case "m15": return r.sc?.sty?.m15 ?? -1;
+        case "ag": return { agree: 2, neutral: 1, disagree: 0 }[agree(s, r.ai)] ?? -1;
         default: return s?.hit ?? -1;
       }
     };
     rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * state.sortDir; });
     const base = D.models["full_" + state.h].metrics.base_rate;
     const th = (k, l, cls = "") => `<th data-k="${k}" class="${cls}">${l}${state.sortKey === k ? (state.sortDir < 0 ? " ▾" : " ▴") : ""}</th>`;
-    let html = `<table><thead><tr>${th("t", "Ticker")}${th("ai", "Danelfin AI")}${th("prob", `G1 P(beat SPY) ${state.h}m`)}${th("p50", "Excess vs SPY p10 / p50 / p90")}${th("pct", "Score pctl", "hide-sm")}<th class="hide-sm">All horizons (6→60m)</th><th>Model</th>${showNew ? "<th>Shares</th><th>Value</th>" : ""}${state.view === "RES" ? "<th></th>" : ""}</tr></thead><tbody>`;
+    let html = `<table><thead><tr>${th("t", "Ticker")}${th("ai", "Danelfin AI")}${th("prob", `G1 P(beat SPY) ${state.h}m`)}${th("ag", `vs Danelfin ${state.h}m`)}${th("p50", "Excess vs SPY p10 / p50 / p90")}${th("pct", "Score pctl", "hide-sm")}<th class="hide-sm">All horizons (6→60m) · Danelfin agreement</th>${th("bm", "B&amp;M")}${th("m15", esc(MAGIC_NAME))}<th>Model</th>${showNew ? "<th>Shares</th><th>Value</th>" : ""}${state.view === "RES" ? "<th></th>" : ""}</tr></thead><tbody>`;
     for (const r of rows) {
       const s = r.sc?.s?.[state.h];
-      const strip = r.sc ? HZ.map((h) => { const x = r.sc.s[h].hit; return `<span title="${h}m" style="background:${probColor(x, D.models["full_" + h].metrics.base_rate)}">${(x * 100).toFixed(0)}</span>`; }).join("") : "";
+      const strip = r.sc ? HZ.map((h) => { const x = r.sc.s[h].hit, a = agree(r.sc.s[h], r.ai); return `<span class="hzc"><span title="${h}m" style="background:${probColor(x, D.models["full_" + h].metrics.base_rate)}">${(x * 100).toFixed(0)}</span><i class="dot ag-${a || "na"}" title="${h}m vs Danelfin: ${a || "no Danelfin score"}"></i></span>`; }).join("") : "";
       const kind = r.sc ? (r.sc.kind === "price" ? `<span class="pill po" title="No usable SEC fundamentals bundled; scored with the price-only model">price-only</span>` : `<span class="pill">full</span>`) : `<span class="pill">not scored</span>`;
       html += `<tr><td><b>${esc(r.t)}</b>${r.sc?.live ? ' <span class="muted small">live</span>' : ""}<span class="nm">${esc(r.name || "")}</span></td>
         <td>${r.ai != null ? r.ai : '<span class="muted">–</span>'}</td>
         <td class="prob" style="background:${s ? probColor(s.hit, base) : "transparent"}">${s ? pct(s.hit) : "–"}</td>
+        <td>${s ? agreePill(agree(s, r.ai), state.h) : "–"}</td>
         <td>${s ? `${sgn(s.p10)} / <b>${sgn(s.p50)}</b> / ${sgn(s.p90)}` : "–"}</td>
         <td class="hide-sm">${s ? Math.round(s.pct * 100) : "–"}</td>
-        <td class="hide-sm"><span class="strip">${strip}</span></td><td>${kind}</td>
+        <td class="hide-sm"><span class="strip">${strip}</span></td><td>${bmBox(r.sc?.sty)}</td><td>${m15Box(r.sc?.sty)}</td><td>${kind}</td>
         ${showNew ? `<td>${r.shares ?? "–"}</td><td>${r.sc?.px && r.shares ? "$" + (r.sc.px * r.shares).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "–"}</td>` : ""}
         ${state.view === "RES" ? `<td><button class="ghost" data-unpin="${esc(r.t)}">Remove</button></td>` : ""}</tr>`;
     }
@@ -225,6 +268,8 @@
     const head = `<tr><th>Horizon</th><th>Test window (rebalance dates)</th><th>~Indep. periods</th><th>Base rate</th><th>AUC (pooled)</th><th>AUC (avg per date)</th><th>Rank IC</th><th>Top−bottom decile excess</th><th>Months top &gt; bottom</th><th>Calib. error (ECE)</th><th>Verdict</th></tr>`;
     $("bt").innerHTML = `<h3 class="small">G1 v2 composite (quality, value, low dilution, balance sheet; wide top-1000 universe, out-of-sample walk-forward)</h3><div class="tblwrap"><table>${head}${rowsOf("full")}</table></div>
       <h3 class="small">Composite vs. alternatives on historical S&amp;P 500 members (rank IC, overlap-adjusted t in brackets)</h3><div class="tblwrap"><table><tr><th>Horizon</th><th>G1 v2 composite (live)</th><th>v2 learned ridge (not used)</th><th>G1 v1 logistic (retired)</th></tr>${HZ.map((h) => { const c = D.models["full_" + h].cmp; const f = (x, t) => `${x.toFixed(3)} <span class="muted">(t≈${t.toFixed(1)})</span>`; return `<tr><td>${h}m</td><td>${f(c.sp_A.rank_ic, c.sp_A.ic_t_ovl)}</td><td>${f(c.sp_B.rank_ic, c.sp_B.ic_t_ovl)}</td><td>${f(c.v1.rank_ic, c.v1.t)}</td></tr>`; }).join("")}</table></div>
+      <h3 class="small">Style boxes pressure test (fixed rules, month-ends 2014+; rank IC with overlap-adjusted t; partial IC = what is left after removing the G1 composite)</h3><div class="tblwrap"><table><tr><th>Horizon</th><th>B&amp;M wide</th><th>B&amp;M S&amp;P</th><th>B&amp;M partial IC vs G1</th><th>${esc(MAGIC_NAME)} wide</th><th>${esc(MAGIC_NAME)} S&amp;P</th><th>${esc(MAGIC_NAME)} partial IC vs G1</th></tr>${HZ.map((h) => { const b = D.meta.style_bt.BM[h], m = D.meta.style_bt.M15[h]; const f = (x, t) => `${x.toFixed(3)} <span class="muted">(t≈${t.toFixed(1)})</span>`; return `<tr><td>${h}m</td><td>${f(b.wide.ic, b.wide.t)}</td><td>${f(b.sp.ic, b.sp.t)}</td><td>${f(b.partial_ic, b.partial_t)}</td><td>${f(m.wide.ic, m.wide.t)}</td><td>${f(m.sp.ic, m.sp.t)}</td><td>${f(m.partial_ic, m.partial_t)}</td></tr>`; }).join("")}</table></div>
+      <p class="small">Pre-registered verdicts: <b>Buffett &amp; Munger: ${D.meta.style_verdict.BM}</b> (significant on the wide universe at every horizon and adds information beyond G1). <b>${esc(MAGIC_NAME)}: ${D.meta.style_verdict.M15}</b>. It is significant at 24–60m on the wide universe but adds little beyond G1, and dropping the deep-value or durable-growth pillar improves it at every horizon. The quality-compounder pillar carries most of the signal. The trend and deep-value pillars pull in opposite directions (correlation −0.23). Both boxes are display-only and never change G1's P(beat SPY).</p>
       <h3 class="small">Price-only model (used for ETFs, foreign/multi-class filers without usable XBRL, and searched tickers)</h3><div class="tblwrap"><table>${head}${rowsOf("price")}</table></div>`;
   }
 
@@ -236,22 +281,22 @@
     out.innerHTML = `<div class="card muted">Fetching ${esc(t)} and SPY from Yahoo…</div>`;
     try {
       const r = await liveScore(t);
-      state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at };
+      state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at, sty: r.sty };
       const spy = state.spyW, a = r.chart.a, sa = spy.a;
       const tr = (arr, k) => (arr.length > k ? arr[arr.length - 1] / arr[arr.length - 1 - k] - 1 : null);
       const name = D.tick[t]?.name || r.chart.meta.longName || r.chart.meta.shortName || "";
       const poNote = r.kind === "price" ? `<div class="disc"><b>Price-only score.</b> No SEC fundamentals are bundled for ${esc(t)}, so this uses the price-only model (momentum, volatility, drawdown, beta). Ask in chat for a full fundamentals score.</div>` : "";
       out.innerHTML = `<div class="card"><div class="row" style="justify-content:space-between"><div><b style="font-size:16px">${esc(t)}</b> <span class="muted">${esc(name)}</span> ${r.kind === "price" ? '<span class="pill po">price-only score</span>' : '<span class="pill">full model</span>'}</div>
         <button id="pinBtn">${state.research.some((x) => x.t === t) ? "Pinned ✓" : "Pin to Research"}</button></div>
-        <div class="small muted">Price ${r.px?.toFixed(2)} ${esc(r.chart.meta.currency || "")} · fetched ${laTime(r.at)}</div>${poNote}
+        <div class="small" style="margin:4px 0">Danelfin AI: <b>${aiLookup()[t] ?? "–"}</b> · Buffett &amp; Munger: ${bmBox(r.sty)} · ${esc(MAGIC_NAME)}: ${m15Box(r.sty)}</div><div class="small muted">Price ${r.px?.toFixed(2)} ${esc(r.chart.meta.currency || "")} · fetched ${laTime(r.at)}</div>${poNote}
         <div class="tblwrap" style="margin-top:8px"><table><tr><th>Trailing return</th><th>6m</th><th>12m</th><th>3y</th></tr>
         <tr><td>${esc(t)}</td><td>${sgn(tr(a, 26))}</td><td>${sgn(tr(a, 52))}</td><td>${sgn(tr(a, 156))}</td></tr>
         <tr><td>SPY</td><td>${sgn(tr(sa, 26))}</td><td>${sgn(tr(sa, 52))}</td><td>${sgn(tr(sa, 156))}</td></tr></table></div>
-        <div class="tblwrap" style="margin-top:8px"><table><tr><th>Horizon</th><th>P(beat SPY)</th><th>Excess vs SPY p10 / p50 / p90</th><th>SPY (benchmark)</th><th>Backtest verdict</th></tr>
-        ${HZ.map((h) => { const s = r.s[h], m = D.models[r.kind + "_" + h]; return `<tr><td>${h}m</td><td class="prob" style="background:${probColor(s.hit, m.metrics.base_rate)}">${pct(s.hit)}</td><td>${sgn(s.p10)} / <b>${sgn(s.p50)}</b> / ${sgn(s.p90)}</td><td class="muted">0% excess · base rate ${pct(m.metrics.base_rate)}</td><td class="${verdictClass(m.verdict)}">${m.verdict}</td></tr>`; }).join("")}
+        <div class="tblwrap" style="margin-top:8px"><table><tr><th>Horizon</th><th>P(beat SPY)</th><th>vs Danelfin</th><th>Excess vs SPY p10 / p50 / p90</th><th>SPY (benchmark)</th><th>Backtest verdict</th></tr>
+        ${HZ.map((h) => { const s = r.s[h], m = D.models[r.kind + "_" + h]; return `<tr><td>${h}m</td><td class="prob" style="background:${probColor(s.hit, m.metrics.base_rate)}">${pct(s.hit)}</td><td>${agreePill(agree(s, aiLookup()[t]), h)}</td><td>${sgn(s.p10)} / <b>${sgn(s.p50)}</b> / ${sgn(s.p90)}</td><td class="muted">0% excess · base rate ${pct(m.metrics.base_rate)}</td><td class="${verdictClass(m.verdict)}">${m.verdict}</td></tr>`; }).join("")}
         </table></div></div>`;
       $("pinBtn").onclick = () => {
-        if (!state.research.some((x) => x.t === t)) { state.research.push({ t, name, s: r.s, kind: r.kind, px: r.px, at: r.at.toISOString() }); saveResearch(); }
+        if (!state.research.some((x) => x.t === t)) { state.research.push({ t, name, s: r.s, kind: r.kind, px: r.px, sty: r.sty, at: r.at.toISOString() }); saveResearch(); }
         $("pinBtn").textContent = "Pinned ✓"; if (state.view === "RES") renderTable();
       };
     } catch (e) {
@@ -270,8 +315,8 @@
     async function worker() {
       while (queue.length) {
         const t = queue.shift();
-        try { let r = null; try { r = await liveScore(t); } catch (_) { r = await liveScore(t); } state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at };
-          const rr = state.research.find((x) => x.t === t); if (rr) Object.assign(rr, { s: r.s, kind: r.kind, px: r.px, at: r.at.toISOString() });
+        try { let r = null; try { r = await liveScore(t); } catch (_) { r = await liveScore(t); } state.live[t] = { s: r.s, kind: r.kind, px: r.px, at: r.at, sty: r.sty };
+          const rr = state.research.find((x) => x.t === t); if (rr) Object.assign(rr, { s: r.s, kind: r.kind, px: r.px, sty: r.sty, at: r.at.toISOString() });
           ok++; } catch (_) { failed.push(t); }
         done++; if (done % 10 === 0 || done === tickers.length) $("refStatus").textContent = `Refreshed ${done}/${tickers.length}…`;
       }
@@ -296,5 +341,5 @@
   $("flt").addEventListener("input", (e) => { state.filter = e.target.value; renderTable(); });
   renderTabs(); renderBanner(); renderStatus(); renderTable(); renderBacktest();
   $("gaps").textContent = Object.keys(D.tick).filter((t) => D.tick[t].kind === "price").sort().join(", ") || "none";
-  window.G1 = { qpct, scoreAll, priceFeatures, fundFeatures, D, state }; // for local verification
+  window.G1 = { qpct, styleOf, scoreAll, priceFeatures, fundFeatures, D, state }; // for local verification
 })();
