@@ -53,3 +53,6 @@ def magic_pillars(d, by="date"):
 def tsy_at(dates):
     t = pd.read_parquet(CACHE / "tnx.parquet")["tnx"] / 100
     return t.reindex(pd.DatetimeIndex(dates), method="ffill").values
+
+LEAN = ["compounders", "downside"]  # lean Magic 15 (docs/PREREGISTRATION_LEAN_MAGIC15.md)
+LEFT_OUT = ["Deep value (Klarman, Pabrai)", "Durable growth (Thiel, Botha, Lin, Fenton, Cohler)", "Macro trend (Druckenmiller)", "Yield / credit value (Black, Rowan)"]

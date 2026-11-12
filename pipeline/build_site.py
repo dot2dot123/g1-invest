@@ -164,18 +164,20 @@ def main():
         return sum(st.values()) + fv, fv
     def magic(f):
         out = {}
-        for k, comps in ST.MAGIC.items():
-            vals = []
+        for k in ST.LEAN:
+            comps = ST.MAGIC[k]; vals = []
             for name, sign in comps:
                 v = qpct(nz(f.get(name)), mq[name])
                 vals.append(.5 if v is None else (v if sign > 0 else 1 - v))
             out[k] = sum(vals) / len(vals)
         return 10 * sum(out.values()) / len(out), out
     st_res = json.load(open(CACHE / "style_test_results.json"))
-    style_bt = {sc: {h: {"wide": {k: st_res["basic"][str(h)]["wide"][sc][k] for k in ("ic", "t", "tmb", "auc")},
-                         "sp": {k: st_res["basic"][str(h)]["sp500"][sc][k] for k in ("ic", "t")},
-                         "partial_ic": st_res[sc][str(h)]["redundancy"]["partial_ic"], "partial_t": st_res[sc][str(h)]["redundancy"]["partial_t"],
-                         "corr_A": st_res[sc][str(h)]["redundancy"]["corr_with_A"]} for h in HORIZONS} for sc in ("BM", "M15")}
+    ln = json.load(open(CACHE / "lean_test_results.json"))
+    def sb(h, sc, key):
+        r = ln[str(h)]
+        return {"wide": {k: r["wide"][sc][k] for k in ("ic", "t", "tmb", "auc")}, "sp": {k: r["sp500"][sc][k] for k in ("ic", "t")},
+                "partial_ic": r[f"red_{sc}"]["partial_ic"] if sc != "A" else None, "partial_t": r[f"red_{sc}"]["partial_t"] if sc != "A" else None}
+    style_bt = {lab: {h: sb(h, sc, lab) for h in HORIZONS} for lab, sc in (("BM", "BM"), ("M15", "L15"), ("M15_old", "M15"), ("A", "A"))}
     tick = {}
     for t, f in feats_by.items():
         kind = "full" if has_fund[t] else "price"
@@ -207,8 +209,8 @@ def main():
     spy_keys = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy.index]
     meta = {"spy_w": {"keys": spy_keys, "a": [round(float(x), 4) for x in spy.values]}, "built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
             "horizons": HORIZONS, "secmed": secmed, "sq": sq, "mq": mq, "tsy": tsy_now,
-            "magic": {"name": "Magic 15", "pillars": {k: [[a, b] for a, b in v] for k, v in ST.MAGIC.items()}, "labels": ST.MAGIC_LABEL},
-            "style_bt": style_bt, "style_verdict": {"BM": "KEEP", "M15": "SIMPLIFY"}, "missing_sp": missing_sp,
+            "magic": {"name": "Magic 15", "sub": "lean: quality compounders + downside protection", "pillars": {k: [[a, b] for a, b in ST.MAGIC[k]] for k in ST.LEAN}, "labels": ST.MAGIC_LABEL, "left_out": ST.LEFT_OUT},
+            "style_bt": style_bt, "style_verdict": {"BM": "KEEP", "M15": "SWAPPED to lean version (passed its pre-registered rule)"}, "missing_sp": missing_sp,
             "n_sp": len(sp), "universe_note": "Composite ranks within SIC sector against the current top-1000 US-listed universe. Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
     full = {"meta": meta, "models": models, "tick": tick, "books": bk, "book_label": BOOK_LABEL}
     out = ROOT / "build" / "data"; out.mkdir(parents=True, exist_ok=True)
