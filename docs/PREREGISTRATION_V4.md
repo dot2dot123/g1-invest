@@ -221,3 +221,43 @@ At each date, for each of the 12 SIC sectors:
 ---
 ## Results
 (appended after testing)
+
+## Results (appended after testing, 2026-11-12 PST)
+
+Sample: wide top-1000 universe, month-ends 2014-01 onward. Regime months 2014+: {'on': 131, 'off': 24} (Risk-On/Risk-Off; Neutral cannot occur before 2023-11 without HY, as pre-registered, and did not occur after).
+Form 4 cluster flagged on 3145 stock-months. Mean monthly one-way top-decile turnover: S_quant 0.394, A 0.134, U 0.497, D 0.173, S_price 0.532.
+
+**Shumway haircut applied to 0 rows.** Every ticker in the free-data panel is still trading (last price 2026-11-02 to 2026-11-10). The wide universe comes from today's SEC ticker list, and S&P names that have since delisted have no usable Yahoo + SEC data here. So the haircut is a no-op, and the primary labels differ from raw only by the turnover drag. This is the known survivorship limitation; it was not changed after the fact.
+
+### Primary: haircut + 10 bps turnover drag
+
+| h | S_quant IC (t) | A IC (t) | U IC (t) | D IC (t) | S_price IC (t) | S_quant p10 | A p10 | U p10 | D p10 | S_price p10 | S_quant top−bottom | A top−bottom | U top−bottom | D top−bottom | S_price top−bottom |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 6m | 0.035 (1.54) | 0.036 (2.41) | 0.032 (1.41) | 0.021 (1.00) | 0.027 (0.81) | -0.217 | -0.223 | -0.234 | -0.208 | -0.192 | +0.014 | +0.014 | +0.019 | +0.002 | -0.001 |
+| 12m | 0.041 (1.35) | 0.049 (2.24) | 0.031 (0.97) | 0.029 (1.02) | 0.022 (0.48) | -0.312 | -0.308 | -0.335 | -0.298 | -0.291 | +0.011 | +0.020 | +0.018 | -0.007 | -0.024 |
+| 24m | 0.047 (1.20) | 0.076 (2.20) | 0.026 (0.67) | 0.056 (1.57) | 0.021 (0.32) | -0.438 | -0.414 | -0.475 | -0.402 | -0.424 | -0.002 | +0.031 | +0.001 | -0.011 | -0.059 |
+| 36m | 0.075 (1.76) | 0.090 (2.39) | 0.056 (1.24) | 0.070 (2.12) | 0.046 (0.64) | -0.500 | -0.501 | -0.550 | -0.481 | -0.507 | +0.012 | +0.051 | +0.016 | -0.015 | -0.066 |
+| 48m | 0.090 (1.83) | 0.104 (2.64) | 0.068 (1.22) | 0.088 (2.63) | 0.053 (0.59) | -0.585 | -0.575 | -0.633 | -0.573 | -0.600 | +0.050 | +0.109 | +0.044 | +0.028 | -0.072 |
+| 60m | 0.078 (1.31) | 0.108 (2.76) | 0.054 (0.82) | 0.084 (1.99) | 0.033 (0.31) | -0.659 | -0.644 | -0.708 | -0.638 | -0.664 | +0.044 | +0.116 | +0.042 | +0.025 | -0.094 |
+
+### Raw labels (no haircut, no drag)
+
+| h | S_quant IC (t) | A IC (t) | U IC (t) | D IC (t) | S_price IC (t) | S_quant p10 | A p10 | U p10 | D p10 | S_price p10 | S_quant top−bottom | A top−bottom | U top−bottom | D top−bottom | S_price top−bottom |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 6m | 0.035 (1.54) | 0.036 (2.41) | 0.032 (1.41) | 0.021 (1.00) | 0.027 (0.81) | -0.212 | -0.221 | -0.228 | -0.206 | -0.186 | +0.019 | +0.016 | +0.025 | +0.004 | +0.006 |
+| 12m | 0.041 (1.35) | 0.049 (2.24) | 0.031 (0.97) | 0.029 (1.02) | 0.022 (0.48) | -0.303 | -0.305 | -0.323 | -0.294 | -0.279 | +0.021 | +0.023 | +0.030 | -0.003 | -0.011 |
+| 24m | 0.047 (1.20) | 0.076 (2.20) | 0.026 (0.67) | 0.056 (1.57) | 0.021 (0.32) | -0.419 | -0.407 | -0.451 | -0.393 | -0.399 | +0.017 | +0.037 | +0.025 | -0.002 | -0.033 |
+| 36m | 0.075 (1.76) | 0.090 (2.39) | 0.056 (1.24) | 0.070 (2.12) | 0.046 (0.64) | -0.472 | -0.492 | -0.515 | -0.469 | -0.469 | +0.040 | +0.061 | +0.052 | -0.003 | -0.028 |
+| 48m | 0.090 (1.83) | 0.104 (2.64) | 0.068 (1.22) | 0.088 (2.63) | 0.053 (0.59) | -0.547 | -0.562 | -0.585 | -0.556 | -0.548 | +0.087 | +0.122 | +0.092 | +0.045 | -0.021 |
+| 60m | 0.078 (1.31) | 0.108 (2.76) | 0.054 (0.82) | 0.084 (1.99) | 0.033 (0.31) | -0.612 | -0.628 | -0.648 | -0.617 | -0.600 | +0.091 | +0.132 | +0.101 | +0.046 | -0.030 |
+
+**Pass rule:**
+- (a) S_quant IC > A at 0/6 horizons (needed ≥ 4).
+- (b) t > 2.5 at 12m and 24m: False.
+- (c) Top-decile p10 better than A at 2/6 horizons (needed ≥ 4).
+
+**Verdict: FAIL.** v2 composite A stays the live quant score. U, D and S_quant appear only as labelled descriptive bars; the non-model v4 features ship on top of A.
+
+Observations (no tuning follows from them):
+- The momentum/trend sleeves (U, S_price) roughly triple top-decile turnover vs A and add little rank IC at any horizon.
+- D (safety) comes closest to A at 36–48m.

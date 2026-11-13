@@ -70,7 +70,54 @@ def price_features_weekly(w, spy_w):
         seg = arr[max(0, i - 155):i + 1]
         mdd[i] = (seg / np.maximum.accumulate(seg) - 1).min()
     f["mdd_3y"] = mdd
+    for k, v in tail_features_weekly(a, spy_w["adj"]).items(): f[k] = v
     return f
+
+def tail_features_weekly(a, spy_a):
+    """v3 tail features from weekly adjusted closes (see docs/PREREGISTRATION_V3.md section 3)."""
+    out = {}
+    r = np.log(a).diff(); rs = np.log(spy_a).diff().reindex(r.index)
+    m = (rs < 0).astype(float).where(r.notna() & rs.notna(), 0.0)
+    x = rs.fillna(0) * m; y = r.fillna(0) * m
+    W = 104
+    n = m.rolling(W, min_periods=52).sum()
+    sx = x.rolling(W, min_periods=52).sum(); sy = y.rolling(W, min_periods=52).sum()
+    sxy = (x * y).rolling(W, min_periods=52).sum(); sxx = (x * x).rolling(W, min_periods=52).sum()
+    cov = (sxy - sx * sy / n) / (n - 1); var = (sxx - sx * sx / n) / (n - 1)
+    out["beta_down"] = (cov / var).where((n >= 20) & (var > 0))
+    sr = a / a.shift(1) - 1
+    out["cvar_5"] = sr.rolling(52, min_periods=40).apply(lambda v: np.sort(v[~np.isnan(v)])[:3].mean(), raw=True)
+    out["sigma_down"] = np.sqrt(52.0) * np.sqrt((np.minimum(sr, 0.0) ** 2).rolling(52, min_periods=40).mean())
+    out["sma40_below"] = (a < a.rolling(40, min_periods=30).mean()).astype(float).where(a.rolling(40, min_periods=30).mean().notna())
+    return out
+
+def daily_features(d):
+    """v3 daily features: VCP ratio and 50-day up/down dollar-volume ratio."""
+    lr = np.log(d["adj"]).diff()
+    vcp = lr.rolling(20, min_periods=20).std() / lr.rolling(120, min_periods=100).std()
+    ret = d["adj"].pct_change(); dv = d["close"] * d["vol"].astype(float)
+    up = (dv * (ret > 0)).rolling(50, min_periods=50).sum(); dn = (dv * (ret < 0)).rolling(50, min_periods=50).sum()
+    return pd.DataFrame({"vcp_ratio": vcp, "up_down_vol_50d": (up / dn).where(dn > 0)})
+
+def filing_drift(d, filed, dates):
+    """post_filing_drift at each date: return over the first 5 trading days on/after the latest quarterly
+    filing f (vs the close before f) times the volume surge vs the prior 50 days. Needs f+7d <= t, t-f <= 120d."""
+    idx = d.index.values.astype("datetime64[ns]"); adj = d["adj"].values; vol = d["vol"].values.astype(float)
+    per = {}
+    for f in filed:
+        i0 = np.searchsorted(idx, f, side="left")
+        if i0 < 50 or i0 + 4 >= len(idx): continue
+        base = vol[i0 - 50:i0].mean()
+        if not (base > 0) or not (adj[i0 - 1] > 0): continue
+        per[f] = (adj[i0 + 4] / adj[i0 - 1] - 1) * (vol[i0:i0 + 5].mean() / base)
+    out = []
+    fs = np.array(sorted(per), dtype="datetime64[ns]")
+    for t in dates:
+        tt = np.datetime64(t, "ns")
+        j = np.searchsorted(fs, tt - np.timedelta64(7, "D"), side="right") - 1
+        if j < 0 or (tt - fs[j]) > np.timedelta64(120, "D"): out.append(np.nan)
+        else: out.append(per[fs[j]])
+    return out
 
 def month_ends(start="2001-01-31"):
     end = pd.Timestamp.today().normalize()
@@ -104,7 +151,8 @@ def fund_features(t, F, close_t, split_after):
         return e, x
     e_rev, rev = v("rev"); e_ni, ni = v("ni"); e_eb, ebit = v("ebit"); _, gp = v("gp")
     _, cfo = v("cfo"); _, capex = v("capex"); _, ie = v("intexp")
-    _, assets = v("assets"); _, eq = v("equity"); _, cash = v("cash"); _, ltd = v("ltdebt"); _, std = v("stdebt")
+    e_as, assets = v("assets"); _, eq = v("equity"); _, cash = v("cash"); _, ltd = v("ltdebt"); _, std = v("stdebt")
+    _, ca = v("ca") if "ca" in F else (None, np.nan); _, cl = v("cl") if "cl" in F else (None, np.nan)
     e_sh, sh = v("shares")
     if np.isnan(sh): return None, {}
     sh_adj = sh * split_after(pd.Timestamp(e_sh))
@@ -166,9 +214,90 @@ def fund_features(t, F, close_t, split_after):
     res["gpa"] = gp / assets if assets and assets > 0 else np.nan
     res["roa"] = ni / assets if assets and assets > 0 else np.nan
     res["mcap"] = mcap
+    # ---- v3 additions (docs/PREREGISTRATION_V3.md section 3) ----
+    res["fcf_conv"] = fcf / max(ni, 1e-6) if not (np.isnan(fcf) or np.isnan(ni)) else np.nan
+    res["fcfy_ev"] = fcf / ev if ev > 0 else np.nan
+    res["rule_of_40"] = res.get("rev_g1", np.nan) + (fcf / rev if rev and rev > 0 else np.nan)
+    res["eq_assets"] = eq / assets if assets and assets > 0 else np.nan
+    v4_features(res, F, t, v, e_rev, e_eb, e_as, rev, gp, ebit, eq, debt, cash0, fcf, mcap)
+    res["f_score"] = piotroski(F, t, e_rev, e_as, ni, cfo, assets, ltd, ca, cl, gp, rev, res.get("dil_1y", np.nan))
     raw = dict(rev=rev, gp=gp, ebit=ebit, ni=ni, cfo=cfo, capex=capex, intexp=ie, assets=assets, equity=eq, cash=cash0,
-               debt=debt, shares_adj=sh_adj, mcap=mcap)
+               debt=debt, shares_adj=sh_adj, mcap=mcap, ca=ca, cl=cl, non_op=res.get("non_op_inv"))
     return raw, res
+
+def v4_features(res, F, t, v, e_rev, e_eb, e_as, rev, gp, ebit, eq, debt, cash0, fcf, mcap):
+    """v4 additions (docs/PREREGISTRATION_V4.md section 3)."""
+    yr = np.timedelta64(365, "D")
+    ago = lambda k, e, days=365: F[k].near(pd.Timestamp(e).to_datetime64() - np.timedelta64(days, "D"), t) if (e is not None and k in F) else np.nan
+    nzv = lambda x: 0.0 if (x is None or np.isnan(x)) else x
+    _, lt = v("inv_lt"); _, em = v("inv_em"); _, st = v("inv_st")
+    non_op = nzv(lt) + nzv(em) + nzv(st)
+    res["non_op_inv"] = non_op
+    adj_ev = max(mcap + debt - cash0 - non_op, 0.25 * mcap)
+    res["fcfy_adj_ev"] = fcf / adj_ev if not np.isnan(fcf) else np.nan
+    res["ey_adj_ev"] = ebit / adj_ev if not np.isnan(ebit) else np.nan
+    # incremental ROIC over 3 years
+    if e_eb is not None and e_as is not None:
+        eb3 = ago("ebit", e_eb, 1095); eq3 = ago("equity", e_as, 1095)
+        d3 = nzv(ago("ltdebt", e_as, 1095)) + nzv(ago("stdebt", e_as, 1095)); c3 = nzv(ago("cash", e_as, 1095))
+        ic_now = (0 if np.isnan(eq) else eq) + debt - cash0
+        ic3 = eq3 + d3 - c3 if not np.isnan(eq3) else np.nan
+        dic = ic_now - ic3
+        res["inc_roic_3y"] = (ebit - eb3) / dic if (not np.isnan(dic) and dic > 0 and not np.isnan(eb3) and not np.isnan(ebit)) else np.nan
+    if e_rev is not None:
+        rev1 = ago("rev", e_rev); gp1 = ago("gp", e_rev)
+        gm0 = gp / rev if (rev and rev > 0 and not np.isnan(gp)) else np.nan
+        gm1 = gp1 / rev1 if (rev1 and rev1 > 0 and not np.isnan(gp1)) else np.nan
+        res["inc_gm"] = gm0 - gm1
+        e_rd, rd = v("rd")
+        rd1 = ago("rd", e_rd) if e_rd is not None else np.nan
+        res["rd_roi"] = (rev - rev1) / rd1 if (rd1 and rd1 > 0 and not np.isnan(rev1)) else np.nan
+        res["rd_int"] = rd / rev if (rev and rev > 0 and not np.isnan(rd)) else np.nan
+    # deferred revenue / contract liabilities
+    def dr_at(off):
+        for keys in (("dr",), ("dr_c1", "dr_n1"), ("dr_c2", "dr_n2")):
+            vals, ends = [], []
+            for k in keys:
+                if off == 0:
+                    e, x = v(k)
+                    if e is not None and not np.isnan(x): vals.append(x); ends.append(e)
+            if off == 0 and vals: return sum(vals), ends[0], keys
+        return np.nan, None, None
+    dr, e_dr, keys = dr_at(0)
+    if keys is not None:
+        dr1 = sum(nzv(ago(k, e_dr)) for k in keys)
+        res["def_rev_g1"] = dr / dr1 - 1 if dr1 > 0 else np.nan
+
+def piotroski(F, t, e_rev, e_as, ni, cfo, assets, ltd, ca, cl, gp, rev, dil1):
+    """9-point Piotroski F-score on TTM vs one year earlier; 9*points/available if >=5 tests available."""
+    def ago(k, e):
+        if e is None or k not in F: return np.nan
+        return F[k].near(pd.Timestamp(e).to_datetime64() - np.timedelta64(365, "D"), t)
+    a0 = ago("assets", e_as); ni0 = ago("ni", e_rev); rev0 = ago("rev", e_rev); gp0 = ago("gp", e_rev)
+    ltd0 = ago("ltdebt", e_as); ca0 = ago("ca", e_as); cl0 = ago("cl", e_as)
+    ok = lambda *xs: all(x is not None and not np.isnan(x) for x in xs)
+    tests = []
+    roa = ni / assets if ok(ni, assets) and assets > 0 else np.nan
+    roa0 = ni0 / a0 if ok(ni0, a0) and a0 > 0 else np.nan
+    tests.append(roa > 0 if ok(roa) else None)
+    tests.append(cfo > 0 if ok(cfo) else None)
+    tests.append(roa > roa0 if ok(roa, roa0) else None)
+    tests.append(cfo > ni if ok(cfo, ni) else None)
+    lv = ltd / assets if ok(ltd, assets) and assets > 0 else np.nan
+    lv0 = ltd0 / a0 if ok(ltd0, a0) and a0 > 0 else np.nan
+    tests.append(lv < lv0 if ok(lv, lv0) else None)
+    cr = ca / cl if ok(ca, cl) and cl > 0 else np.nan
+    cr0 = ca0 / cl0 if ok(ca0, cl0) and cl0 > 0 else np.nan
+    tests.append(cr > cr0 if ok(cr, cr0) else None)
+    tests.append(dil1 <= 0 if ok(dil1) else None)
+    gm = gp / rev if ok(gp, rev) and rev > 0 else np.nan
+    gm0 = gp0 / rev0 if ok(gp0, rev0) and rev0 > 0 else np.nan
+    tests.append(gm > gm0 if ok(gm, gm0) else None)
+    at = rev / assets if ok(rev, assets) and assets > 0 else np.nan
+    at0 = rev0 / a0 if ok(rev0, a0) and a0 > 0 else np.nan
+    tests.append(at > at0 if ok(at, at0) else None)
+    av = [x for x in tests if x is not None]
+    return 9.0 * sum(bool(x) for x in av) / len(av) if len(av) >= 5 else np.nan
 
 def split_factor_fn(d):
     sp = d["split"]; sp = sp[sp != 1.0]
@@ -187,6 +316,10 @@ def process(t, dates_str, want_targets=True):
     rows = pf.reindex(pd.DatetimeIndex(dates), method="ffill", tolerance=pd.Timedelta(days=8))
     rows["px_close"] = d["close"].reindex(pd.DatetimeIndex(dates), method="ffill", tolerance=pd.Timedelta(days=8)).values
     rows["first_px"] = d.index[0]
+    dfe = daily_features(d)
+    dfe = dfe.reindex(pd.DatetimeIndex(dates), method="ffill", tolerance=pd.Timedelta(days=8))
+    for c in dfe: rows[c] = dfe[c].values
+    rows["last_px_ord"] = float((d.index[-1] - pd.Timestamp("1970-01-01")).days)
     if want_targets:
         y = fwd_excess(d, spy, dates, HORIZONS)
         rows = rows.join(y)
@@ -210,6 +343,11 @@ def process(t, dates_str, want_targets=True):
                 med = rows[k].rolling(60, min_periods=24).median()
                 rows[f"{k}_hist_med"] = med
                 rows[f"{k}_vs_hist"] = rows[k] - med
+        # v3 rolling own-history features (60 month-ends, min 24)
+        if "roic" in rows: rows["roic_5y_med"] = rows["roic"].rolling(60, min_periods=24).median()
+        if "roe" in rows: rows["roe_stab"] = -rows["roe"].rolling(60, min_periods=24).std()
+        if F.get("filed_q") is not None and len(F["filed_q"]):
+            rows["post_filing_drift"] = filing_drift(d, F["filed_q"], dates)
     rows["ticker"] = t
     last_raw = raws[dates[-1]] if dates[-1] in raws else None
     return t, rows, last_raw

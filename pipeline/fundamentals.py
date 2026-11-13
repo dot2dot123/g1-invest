@@ -16,6 +16,7 @@ FLOW = {
             "ifrs:CashFlowsFromUsedInOperatingActivities"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
               "ifrs:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
+    "rd": ["ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost", "ifrs:ResearchAndDevelopmentExpense"],
     "intexp": ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseDebt", "InterestAndDebtExpense",
                "ifrs:FinanceCosts", "ifrs:InterestExpense"],
 }
@@ -25,6 +26,16 @@ INST = {
     "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "Cash", "ifrs:CashAndCashEquivalents"],
     "ltdebt": ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations", "ifrs:NoncurrentPortionOfNoncurrentBorrowings", "ifrs:Borrowings"],
     "stdebt": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings", "ifrs:CurrentBorrowings", "ifrs:CurrentPortionOfNoncurrentBorrowings"],
+    # v3 (Piotroski current-ratio test)
+    "ca": ["AssetsCurrent", "ifrs:CurrentAssets"],
+    "cl": ["LiabilitiesCurrent", "ifrs:CurrentLiabilities"],
+    # v4 (docs/PREREGISTRATION_V4.md section 3)
+    "inv_lt": ["LongTermInvestments", "MarketableSecuritiesNoncurrent"],
+    "inv_em": ["EquityMethodInvestments"],
+    "inv_st": ["ShortTermInvestments", "MarketableSecuritiesCurrent"],
+    "dr": ["ContractWithCustomerLiability", "DeferredRevenue"],
+    "dr_c1": ["ContractWithCustomerLiabilityCurrent"], "dr_n1": ["ContractWithCustomerLiabilityNoncurrent"],
+    "dr_c2": ["DeferredRevenueCurrent"], "dr_n2": ["DeferredRevenueNoncurrent"],
 }
 
 def _records(facts, name, unit="USD"):
@@ -193,6 +204,8 @@ def load_ticker(t):
             if qq is not None:
                 qq["avail"] = qq["filed"] + pd.Timedelta(days=LAG_DAYS)
             out["ni_q"] = PIT(qq)
+            # v3: SEC filing dates of quarterly results (first-filed 10-Q / 10-K), for post-filing drift
+            out["filed_q"] = np.sort(qq["filed"].drop_duplicates().values.astype("datetime64[ns]")) if qq is not None else np.array([], dtype="datetime64[ns]")
         if k == "ebit" or k == "rev":
             pass
     for k, names in INST.items():
