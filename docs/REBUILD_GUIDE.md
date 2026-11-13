@@ -6,7 +6,56 @@ G1 is for Gary A's personal research only. It is not financial advice.
 
 ---
 
-## 0. G1 v4 (current; added 2026-11-12). Where this section conflicts with later sections, this section wins.
+## 00. G1 v4.2 (current; added 2026-11-12 PST). Where this section conflicts with any later section, this section wins.
+
+**Live score = V42** (`pipeline/model_v42.py`, pre-registered in `docs/PREREGISTRATION_V4_2.md`, commit 27e9cd6 before any result; results appended in c13ea6e).
+- P1 = universe percentile of Buffett & Munger points (0–10); P2 = universe percentile of lean Magic 15; P3 = mean within-sector percentile of `ey_hist_med` (5y median EBIT/EV) and `fcfy_ev`; P4 = mean of within-sector percentile of `mom_12_1` and 1 − universe percentile of `beta_down`.
+- blend = mean(P1..P4); V = percentile of blend; if B&M < 4 then V ≤ 0.65; score = 100·V. No fitted parameters.
+- Browser mirror: `v42Of()` in `web/app.js` uses shipped 101-point quantiles `meta.v42q` (`bm`, `l15`, `beta_down`, `blend`, per-sector `ey_hist_med`/`fcfy_ev`/`mom_12_1`). Python mirror `v42_parts()/v42_score()` in `build_site.py`; `build/data/parity.json` checks them.
+- Pass rule: rank IC beats A at ≥ 4/6 horizons AND hysteresis turnover ≤ 1.2× A, where holdings H_t = {pct > 0.85} ∪ (H_{t−1} ∩ {pct > 0.65}).
+
+| h | V42 IC (t) | A IC (t) | V42 TMB | A TMB |
+|---|---|---|---|---|
+| 6m | .047 (2.23) | .036 (2.41) | +.004 | +.015 |
+| 12m | .061 (2.27) | .049 (2.24) | −.006 | +.022 |
+| 24m | .092 (2.83) | .076 (2.20) | −.007 | +.035 |
+| 36m | .116 (4.05) | .090 (2.39) | +.003 | +.057 |
+| 48m | .132 (4.38) | .104 (2.64) | +.047 | +.117 |
+| 60m | .125 (3.23) | .108 (2.76) | +.053 | +.126 |
+
+Hysteresis turnover V42 0.031 vs A 0.048 (0.65×) → **PASS, V42 live**. Caveat: V42's top-minus-bottom spread is much smaller than A's (it ranks the whole list better, the extreme decile less sharply).
+
+**Execution rules (prereg §4; UI rules, not backtested; "model estimates, not advice").** Q = G1 Score; Upside/Safety = percentiles of U and D among the top-1000 (`meta.pq.U/.D`; QA fix 2026-11-12: the raw sleeve averages are compressed to ~10–80, so the 70/60/65 thresholds were unreachable).
+- STRONG BUY: Q ≥ 75, Upside ≥ 70, Safety ≥ 60, price > 40w SMA, 1m return ≤ 15%. ACCUMULATE (Staggered): same with 1m > 15%.
+- WAIT FOR TREND (Pullback): Q ≥ 70, Upside ≥ 65, and price < SMA40 or > 20% below the 52w high. Shows the 10w-EMA Momentum Reclaim Trigger and the Deep-Value zone (price at the 5y-median EV/EBIT; shown as "already below" if that price is above today's, and marked unreliable for dossier cyclical-peak names).
+- CLIMAX TRIM (needs an entry): gain ≥ 40%, price > 1.35× SMA40, weekly volume > 3× 52w median, close in the bottom half of the weekly range.
+- SELL / BROKEN: price < SMA40 AND (Q < 45 OR (om_trend < 0 AND Q < 70)). QA fix: Q ≥ 70 is never "broken" on a margin dip alone.
+- Price-only names (no SEC fundamentals: ETFs, some foreign listings) can only be HOLD or SELL (QA fix).
+- HOLD otherwise. Bear Preservation pauses buys. Rebalance alerts only if a book CSV has shares and a weight drifts > 25% from equal weight.
+- Stops: Initial Risk Stop = max(SMA40 if below price, P·(1+cvar_5) if cvar_5 < 0), always < price, else n/a. With an Entry $ (CSV EntryPrice/Cost column, or the inline input saved in localStorage `g1.positions.v1`): stage 2 breakeven at +20%, stage 3 10w-EMA trail at +40%.
+- Size: edge = max(0, p − base rate 12m); r = edge / max(sigma_down, 0.12); r ≥ 0.40 High 6–8%, 0.20–0.40 Core 3–5%, 0–0.20 Starter 1–2%, else No edge. 0 for SELL/TRIM; halved for WAIT or earnings ≤ 7 days.
+- Cash banner: equity = clamp(0.14 / SPY 1y daily downside vol, 0.5, 1), rest SGOV; in Bear Preservation equity = min(vm, 1 − reserve). `meta.weather.spy_dvol`, `eq_vm`.
+- Python mirror `py_verdict()` (no entry → never TRIM) feeds the audit ledger; QA checks it equals the JS verdict for every ledger row.
+
+**Business dossiers** (`pipeline/intel_dossiers.py`, schema 2). Produced only when Gary asks the bot: the bot runs one web search per ticker and writes structured JSON (bull_case and bear_case first, then sub-scores moat −2..2, hidden_stakes 0..3, ai_threat −3..1, cyclical −3..0, pricing −2..2, variant −2..2, flags, thin list, source URLs). `f_strat` = clamped sum (−10..+10); thin sub-scores count 0; ≥ 4 thin or no sources → f_strat 0. Shown as a separate "Dossier" pill, never added into the G1 Score.
+- Workflow: `../.venv/bin/python intel_dossiers.py --pending --names` (holdings + top-30 finalists missing or older than 30 days) → bot writes batch files → `intel_dossiers.py --ingest FILE` → `cache/dossiers/{T}.json`. `analyze_ticker.py T` prints a dossier or the brief to run.
+- `cache/dossiers/manual_overrides.json` (gitignored) wins over generated values. Old schema-1 files were moved to `cache/dossiers/_v4_old/`.
+- No paid APIs. ETFs (e.g. sector funds) get no dossier.
+
+**Live audit ledger.** `build_site.py` appends one row per (ISO week, ticker) for holdings + finalists to `cache/live_audit.jsonl` (gitignored; skip with `--no-audit`): week, date, quant_score, model, dossier_score, verdict, price. `scripts/track_signals.py` scores it later (forward excess return vs SPY at 4/13/26/52 weeks; IC of quant and dossier scores; hit rate by verdict). Manual only.
+
+**Live prices / proxy.** Order: own proxy (`meta.proxy_url` from env `G1_PROXY_URL` or `config/users.json` `"proxy_url"`, empty by default) → Yahoo direct → corsproxy.io → codetabs → AllOrigins raw → AllOrigins get, each with a timeout; last working route first. Refresh uses 3 parallel requests on free proxies (6 with own proxy) plus one slower retry pass. Free proxies are unreliable (2026-11-12: corsproxy.io 401, codetabs 522, AllOrigins intermittent); the reliable fix is `workers/cors-proxy.js` (Cloudflare Worker, origin-locked, Yahoo chart + SEC companyfacts only; deploy steps in `workers/README.md`; not deployed by the bot).
+
+**UI (v4.2 redesign).** Light theme (`web/style.css`), colour-coded verdict badges (`.v-buy/.v-acc/.v-wait/.v-trim/.v-sell/.v-hold`), Market Weather + Cash Plan banners side by side, table rows turn into cards under 760 px (`td[data-l]` labels). Help and method text in `web/template.html`. Disclaimers "Personal use only, not financial advice", proxy wording and "Gary A" must stay.
+
+**Commands.**
+- UI/logic only (no downloads): `cd pipeline && ../.venv/bin/python build_site.py --site-only && ../.venv/bin/python render.py`
+- Publish unencrypted (current, at Gary's request): `G1_NO_ENCRYPT=1 scripts/encrypt-pages.sh`, then `git add index.html otw/index.html && git commit && git push`, then `scripts/verify_live.py` (expects no password screen when `G1_NO_ENCRYPT=1`).
+- Re-encrypt when Gary asks: `scripts/encrypt-pages.sh && git add index.html otw/index.html && git -c user.name=dot2dot123 -c user.email=dot2dot123@users.noreply.github.com commit -m "Re-encrypt G1 pages" && git push`, then `.venv/bin/python scripts/verify_live.py`.
+- Full rebuild: `scripts/rebuild.sh` (now includes `model_v42.py`).
+- QA: Playwright (Chrome headless) over every tab of both pages at 1400 px and 375 px: NaN/undefined, console errors, horizontal overflow, Look Up, Entry $ → localStorage, JS vs `py_verdict` parity, stops below price, verdict/size distributions.
+
+## 0. G1 v4 (superseded in part by section 00 / v4.2; added 2026-11-12). Where this section conflicts with later sections (other than 00), this section wins.
 
 **What changed.**
 - **Engine test.** A five-sleeve quant engine (S_quant) was pre-registered in `docs/PREREGISTRATION_V4.md` and tested against the v2 composite A. It FAILED, so A is still the live quant score. Everything else in v4 ships on top of A.

@@ -14,3 +14,7 @@ package-lock.json
 
 # multi-user config holds local holdings/password paths
 config/users.json
+
+# Gary's private dossier notes (already covered by cache/, listed explicitly)
+cache/dossiers/manual_overrides.json
+cache/live_audit.jsonl

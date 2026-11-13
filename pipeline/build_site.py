@@ -29,8 +29,10 @@ COLS = ["px", "mcap", "roic_5y_med", "inc_roic_3y", "fcf_conv", "gpa", "accruals
         # raw for live re-pricing
         "ebit", "cfo", "capex", "equity", "debt", "cash", "non_op", "shares_adj", "ey_hist_med", "fcfy_hist_med",
         # style history, stops
-        "roe_med5", "roe_min5", "roa_min5", "sma40c", "ema10c"]
-PRICE_DEP = ["ey", "fcfy", "bm", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "mcap"]
+        "roe_med5", "roe_min5", "roa_min5", "sma40c", "ema10c",
+        # v4.2: cyclically-adjusted value input, weekly volume/close quality for CLIMAX TRIM
+        "fcfy_ev", "wk_vol_x", "wk_close_pos"]
+PRICE_DEP = ["ey", "fcfy", "bm", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "mcap", "fcfy_ev"]
 
 def nz(v):
     try: f = float(v)
@@ -108,6 +110,43 @@ def live_scores(f, sector, fin, M):
     o["A"] = fsum_js(pv) / len(pv)
     return o
 
+# ---------------- v4.2 live score mirror (app.js v42Of) ----------------
+BM_MAXPTS = {"durable_roe": 2, "low_leverage": 1, "stable_margins": 1, "consistent_profits": 1, "gross_margin": 2, "share_count": 1, "fcf_vs_treasury": 2}
+def bm_static(f, tsy):
+    """Mirror of app.js bmStatic(): Buffett & Munger rule points (sum 0-10)."""
+    g = f.get; c = {}
+    med, mn = g("roe_med5"), g("roe_min5")
+    c["durable_roe"] = 1 if med is None else (2 if (med >= 0.15 and mn is not None and mn >= 0.10) else (1 if med >= 0.12 else 0))
+    c["low_leverage"] = 0.5 if g("lev") is None else (1 if g("lev") <= 0.30 else 0)
+    c["stable_margins"] = 0.5 if g("om_stab") is None else (1 if g("om_stab") >= -0.03 else 0)
+    c["consistent_profits"] = 0.5 if g("roa_min5") is None else (1 if g("roa_min5") > 0 else 0)
+    c["gross_margin"] = 1 if g("gm") is None else (2 if g("gm") >= 0.40 else (1 if g("gm") >= 0.25 else 0))
+    c["share_count"] = 0.5 if g("dil_3y") is None else (1 if g("dil_3y") <= 0 else 0)
+    fc = g("fcfy"); c["fcf_vs_treasury"] = 1 if fc is None else (2 if fc >= tsy else (1 if fc >= 0.6 * tsy else 0))
+    return c
+
+def l15_static(f, mq):
+    """Mirror of app.js styleOf() lean Magic 15 (0-10)."""
+    def sg(v, s): return 0.5 if v is None else (v if s > 0 else 1 - v)
+    pills = [fsum_js([sg(qpct(f.get(n), mq.get(n)), s) for n, s in ST.MAGIC[k]]) / len(ST.MAGIC[k]) for k in ST.LEAN]
+    return 10 * fsum_js(pills) / len(pills)
+
+def v42_parts(f, sector, M):
+    """Pillars P1-P4 and the blend (docs/PREREGISTRATION_V4_2.md); ranks against shipped build-date quantiles."""
+    q = M["v42q"]; sqs = q["sec"].get(sector) or {}
+    nz5 = lambda v: 0.5 if v is None else v
+    bm = fsum_js(bm_static(f, M["tsy"]).values()); l15 = l15_static(f, M["mq"])
+    p1 = nz5(qpct(bm, q["bm"])); p2 = nz5(qpct(l15, q["l15"]))
+    p3 = (nz5(qpct(f.get("ey_hist_med"), sqs.get("ey_hist_med"))) + nz5(qpct(f.get("fcfy_ev"), sqs.get("fcfy_ev")))) / 2
+    bd = qpct(f.get("beta_down"), q["beta_down"])
+    p4 = (nz5(qpct(f.get("mom_12_1"), sqs.get("mom_12_1"))) + (0.5 if bd is None else 1 - bd)) / 2
+    return {"bm": bm, "l15": l15, "P1": p1, "P2": p2, "P3": p3, "P4": p4, "blend": (p1 + p2 + p3 + p4) / 4}
+
+def v42_score(parts, M):
+    v = qpct(parts["blend"], M["v42q"]["blend"])
+    if parts["bm"] < 4.0: v = min(v, 0.65)
+    return 100 * v
+
 def fsum_js(xs):
     """Left-to-right float sum like JS reduce (Python >= 3.12 sum() uses compensated summation, which differs in the last bits)."""
     acc = 0.0
@@ -127,6 +166,19 @@ def weekly_close(t):
     d = pd.read_parquet(f)
     d = d[d.close > 0]
     return d[["adj", "close"]].resample("W-FRI").last().dropna()
+
+def weekly_climax(t):
+    """Last week's volume / median weekly volume of the prior 52 weeks, and where the last weekly close sits in that
+    week's range (0 = low, 1 = high). The cache has daily closes only, so the weekly range is the range of daily closes
+    (proxy); a live Refresh uses Yahoo's real weekly high/low/volume."""
+    d = pd.read_parquet(PRICES / f"{t}.parquet")
+    d = d[d.close > 0]
+    if len(d) < 300 or "vol" not in d: return None, None
+    wk = d.resample("W-FRI").agg({"close": ["last", "max", "min"], "vol": "sum"}).dropna()
+    if len(wk) < 53: return None, None
+    v = wk[("vol", "sum")].values; med = float(np.median(v[-53:-1]))
+    hi, lo, cl = wk[("close", "max")].iloc[-1], wk[("close", "min")].iloc[-1], wk[("close", "last")].iloc[-1]
+    return (float(v[-1] / med) if med > 0 else None), (float((cl - lo) / (hi - lo)) if hi > lo else 0.5)
 
 def ema(xs, n=10):
     a = 2 / (n + 1); e = xs[0]
@@ -161,10 +213,72 @@ def _next_earnings(t, today):
     except Exception:
         return None
 
-def load_config():
+def py_verdict(sc, f, quant, bear=False):
+    """Mirror of app.js verdict() without an Entry $ (so never CLIMAX TRIM). Used for the live audit ledger and QA."""
+    P, sma, r1 = f.get("px"), f.get("sma40c"), f.get("rev_1m")
+    below = (P < sma) if sma is not None else f.get("sma40_below") == 1
+    above = (P > sma) if sma is not None else f.get("sma40_below") == 0
+    Up, Sp = sc.get("Up", sc["U"]), sc.get("Sp", sc["D"])   # percentiles among the top-1000 (set by score_one)
+    has_fund = sc.get("kind", "full") != "price"
+    fund_ok = has_fund and quant >= 75 and Up >= 70 and Sp >= 60
+    dd = f.get("dd_52w"); om = f.get("om_trend")
+    if fund_ok and above and not (r1 is not None and r1 > 0.15): v = "STRONG BUY"
+    elif fund_ok and above and r1 is not None and r1 > 0.15: v = "ACCUMULATE (Staggered)"
+    elif has_fund and quant >= 70 and Up >= 65 and (below or (dd is not None and dd < -0.2)): v = "WAIT FOR TREND (Pullback)"
+    elif below and (quant < 45 or (om is not None and om < 0 and quant < 70)): v = "SELL / BROKEN"
+    else: v = "HOLD"
+    if bear and v in ("STRONG BUY", "ACCUMULATE (Staggered)"): v += " (buys paused)"
+    return v
+
+def score_one(t, S):
+    """Python mirror of the browser score for one shipped ticker -> (quant, sc dict, features)."""
+    meta = S["meta"]; mt = S["tmeta"][t]
+    f = dict(zip(meta["cols"], S["rows"][t])) | {"form4": mt[4]}
+    sector = meta["sectors"][mt[0]]
+    M = {k: meta[k] for k in ("sq", "sqA", "uq", "fq", "smult", "mq", "tsy", "v42q")} | {"regime": meta["weather"]["build_regime"]}
+    sc = live_scores(f, sector, mt[2] == 1, M)
+    if mt[1] == 1:
+        sc["V42"] = v42_score(v42_parts(f, sector, M), M); model = meta["live"]
+    else: model = "S_price"
+    raw = sc[model]
+    quant = 100 * qpct(raw, meta["pq"][model]) if model == "A" else raw
+    sc["kind"] = "full" if mt[1] == 1 else "price"
+    sc["Up"] = 100 * qpct(sc["U"], meta["pq"]["U"]); sc["Sp"] = 100 * qpct(sc["D"], meta["pq"]["D"])
+    return quant, sc, f
+
+def append_audit(S, tickers, pool):
+    """Weekly live audit ledger (cache/live_audit.jsonl): one row per (ISO week, ticker), appended on manual builds only."""
+    f = CACHE / "live_audit.jsonl"
+    seen = set()
+    if f.exists():
+        for line in open(f):
+            try: r = json.loads(line); seen.add((r["week"], r["ticker"]))
+            except Exception: pass
+    today = dt.datetime.now(LA).date(); iso = today.isocalendar(); week = f"{iso[0]}-W{iso[1]:02d}"
+    W = S["meta"]["weather"]; bear = W["spy"] < W["sma40"] and W["breadth"] < 0.35
+    n = 0
+    with open(f, "a") as out:
+        for t in sorted(tickers):
+            if t not in S["rows"] or (week, t) in seen: continue
+            q, sc, fe = score_one(t, S)
+            d = pool.get(t) or {}
+            out.write(json.dumps({"week": week, "date": str(today), "ticker": t, "quant_score": round(q, 2), "model": S["meta"]["live"],
+                                  "dossier_score": d.get("f_strat"), "verdict": py_verdict(sc, fe, q, bear), "price": fe.get("px"),
+                                  "price_asof": S["meta"]["price_asof"]}) + "\n")
+            n += 1
+    print("live audit:", n, "new rows for", week, "->", f.name)
+    return n
+
+def load_config(full=False):
     f = ROOT / "config" / "users.json"
     if not f.exists(): raise SystemExit("Missing config/users.json. Copy config/users.example.json and edit (see docs/REBUILD_GUIDE.md).")
-    return json.load(open(f))["pages"]
+    c = json.load(open(f))
+    return c if full else c["pages"]
+
+def proxy_url():
+    """Optional own CORS proxy (workers/cors-proxy.js). Env G1_PROXY_URL wins over users.json "proxy_url"; empty = free proxies only."""
+    import os
+    return (os.environ.get("G1_PROXY_URL") or load_config(True).get("proxy_url") or "").strip()
 
 def read_book(path, danelfin):
     d = pd.read_csv(path)
@@ -178,7 +292,7 @@ def read_book(path, danelfin):
         if not t or t == "NAN": continue
         g = lambda k: nz(r[cols[k]]) if k in cols else None
         row = {"t": t, "name": (str(r[cols["company"]]) if "company" in cols and isinstance(r[cols["company"]], str) else None),
-               "shares": g("shares"), "entry": g("purchase price") if "purchase price" in cols else g("cost")}
+               "shares": g("shares"), "entry": next((g(k) for k in ("entryprice", "entry price", "entry", "purchase price", "cost") if k in cols), None)}
         if danelfin:
             row.update({"ai": g("ai score"), "fund": g("fundamental"), "tech": g("technical"), "sent": g("sentiment"), "lowrisk": g("low risk")})
         rows.append(row)
@@ -193,7 +307,9 @@ def shared():
     U = cur[cur.univ].copy()
     res4 = {int(k) if k.isdigit() else k: v for k, v in json.load(open(CACHE / "model_v4_results.json")).items()}
     passed = bool(res4["pass"]["PASS"])
-    live = "S_quant" if passed else "A"
+    res42 = {int(k) if k.isdigit() else k: v for k, v in json.load(open(CACHE / "model_v42_results.json")).items()}
+    passed42 = bool(res42["pass"]["PASS"])
+    live = "V42" if passed42 else ("S_quant" if passed else "A")
     # regime + market weather
     fred, spy = M4.load_macro()
     rg = M4.regime_at(now, fred, spy)
@@ -210,11 +326,15 @@ def shared():
     hy = fred["BAMLH0A0HYM2"].dropna()
     cv = fred["T10Y2Y"].dropna()
     spy_w = weekly_close("SPY")["adj"]
+    spy_d = pd.read_parquet(PRICES / "SPY.parquet")["adj"].dropna()
+    rr = spy_d.pct_change().dropna().iloc[-252:]
+    spy_dvol = float(np.sqrt(252 * np.mean(np.minimum(rr.values, 0.0) ** 2)))
     weather = {"hy": nz(hy.iloc[-1]), "hy_date": str(hy.index[-1].date()), "hy_peak13": nz(hy[hy.index > hy.index[-1] - pd.Timedelta(days=91)].max()),
                "curve": nz(cv.iloc[-1]), "curve_date": str(cv.index[-1].date()), "breadth": breadth,
                "breadth_min13": nz(wb.iloc[:-1].min()), "breadth_weekly_now": nz(wb.iloc[-1]),
                "build_regime": rg["regime"], "spy": rg["spy"], "sma40": rg["sma40"], "spy_hi52": nz(spy_w.iloc[-52:].max()),
-               "form4_last": str(pd.Timestamp(f4_last).date()) if f4_last is not None else None}
+               "form4_last": str(pd.Timestamp(f4_last).date()) if f4_last is not None else None,
+               "spy_dvol": spy_dvol, "eq_vm": min(1.0, max(0.5, 0.14 / spy_dvol)) if spy_dvol > 0 else 1.0}
     # sector multipliers at build (S4)
     sm = M4.sector_mult(U.reset_index().assign(date=now))
     smult = {s: float(m) for s, m in zip(U.sector.values, sm)}
@@ -243,11 +363,13 @@ def shared():
     for t, r in cur.iterrows():
         rw = raw.get(t) or {}
         w = weekly_close(t)
-        sma40c = ema10c = None
+        sma40c = ema10c = wk_vol_x = wk_close_pos = None
         if w is not None and len(w) >= 30:
             c = w["close"].values; sma40c = float(c[-40:].mean()); ema10c = float(ema(list(c[-260:])))
+            wk_vol_x, wk_close_pos = weekly_climax(t)
         vals = {**{k: r.get(k) for k in COLS if k in r.index}, "px": r.px_close, "ey_hist_med": r.get("ey_hist_med"),
-                "fcfy_hist_med": r.get("fcfy_hist_med"), "non_op": rw.get("non_op"), "sma40c": sma40c, "ema10c": ema10c}
+                "fcfy_hist_med": r.get("fcfy_hist_med"), "non_op": rw.get("non_op"), "sma40c": sma40c, "ema10c": ema10c,
+                "fcfy_ev": r.get("fcfy_ev"), "wk_vol_x": wk_vol_x, "wk_close_pos": wk_close_pos}
         for k in ("ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj"): vals[k] = rw.get(k)
         rows[t] = [rnd(vals.get(k)) for k in COLS]
         has_fund = nz(rw.get("shares_adj")) is not None and any(nz(r.get(k)) is not None for k in ("ey", "fcfy", "roe"))
@@ -264,19 +386,32 @@ def shared():
         prim = max(have, key=lambda t: nrows.get(t, 0))
         for t in tks:
             if t not in rows: alias[t] = prim
-    M = {"sq": sq, "sqA": sqA, "uq": uq, "fq": fq, "smult": smult, "regime": rg["regime"]}
+    M = {"sq": sq, "sqA": sqA, "uq": uq, "fq": fq, "smult": smult, "regime": rg["regime"], "mq": mq, "tsy": float(ST.tsy_at([now])[0])}
     # scores of the current universe from the shipped (rounded) values -> score quantiles
     def feats(t): return dict(zip(COLS, rows[t])) | {"form4": meta_t[t][4]}
     sc = {t: live_scores(feats(t), SECTORS[meta_t[t][0]], meta_t[t][2] == 1, M) for t in rows}
     univ = [t for t in rows if meta_t[t][5] == 1 and meta_t[t][1] == 1]
-    pq = {m: [rnd(x, 12) for x in np.quantile([sc[t][m] for t in univ], PCT)] for m in ("A", "S_quant", "U", "D", "S_price")}
+    # v4.2 quantiles from the shipped values of the current universe (build date)
+    UF = pd.DataFrame({t: feats(t) for t in univ}).T; UF["sector"] = [SECTORS[meta_t[t][0]] for t in univ]
+    UF["bm_pts"] = [fsum_js(bm_static(feats(t), M["tsy"]).values()) for t in univ]
+    UF["l15"] = [l15_static(feats(t), mq) for t in univ]
+    v42q = {"bm": quant(UF.bm_pts), "l15": quant(UF.l15), "beta_down": quant(UF.beta_down),
+            "sec": {s_: {k: quant(g[k]) for k in ("ey_hist_med", "fcfy_ev", "mom_12_1")} for s_, g in UF.groupby("sector")}}
+    M["v42q"] = dict(v42q, blend=None)
+    parts = {t: v42_parts(feats(t), SECTORS[meta_t[t][0]], M) for t in rows if meta_t[t][1] == 1}
+    v42q["blend"] = quant(pd.Series([parts[t]["blend"] for t in univ])); M["v42q"] = v42q
+    for t, pp in parts.items(): sc[t]["V42"] = v42_score(pp, M)
+    for t in rows:
+        if "V42" not in sc[t]: sc[t]["V42"] = None
+    pq = {m: [rnd(x, 12) for x in np.quantile([sc[t][m] for t in univ], PCT)] for m in ("A", "S_quant", "U", "D", "S_price", "V42")}
     cal = {}
     for h in HORIZONS:
         o = pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")
         cal[h] = {m: decile_table(o, m, f"yh{h}") for m in ("A", "S_quant", "S_price")}
-    base_rate = {h: float((pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")[f"yh{h}"] > 0).mean()) for h in HORIZONS}
+        cal[h]["V42"] = decile_table(pd.read_parquet(CACHE / f"oos_v42_{h}.parquet"), "V42", f"yh{h}")
+    base_rate = {h: float((pd.read_parquet(CACHE / f"oos_v42_{h}.parquet")[f"yh{h}"] > 0).mean()) for h in HORIZONS}
     # finalists: top 30 by the live quant score among the current universe (fundamentals required)
-    fin30 = sorted(univ, key=lambda t: -sc[t][live])[:30]
+    fin30 = sorted(univ, key=lambda t: (-sc[t][live], t))[:30]
     style_bt = {}
     try:
         ln = json.load(open(CACHE / "lean_test_results.json"))
@@ -289,7 +424,9 @@ def shared():
             "sleeves": {k: [[f, s] for f, s in v] for k, v in M4.SLEEVES.items()}, "sleeves_fin": {"S1": [[f, s] for f, s in M4.S1_FIN], "S5": [[f, s] for f, s in M4.S5_FIN]},
             "sprice": [[f, s] for f, s in M4.SPRICE], "fin_mask": M4.FIN_MASK, "pillars": {k: [[f, s] for f, s in v] for k, v in M2.PILLARS.items()},
             "regime_w": M4.REGIME_W, "weather": weather, "sq": sq, "sqA": sqA, "uq": uq, "fq": fq, "mq": mq, "smult": smult, "pq": pq, "cal": cal,
-            "base_rate": base_rate, "tsy": float(ST.tsy_at([now])[0]),
+            "base_rate": base_rate, "tsy": M["tsy"], "v42q": v42q, "v42_pass": res42["pass"],
+            "v42": {str(h): {lab: {m: {k: res42[h][lab][m][k] for k in ("ic", "t", "p10", "tmb")} for m in ("V42", "A")} for lab in ("primary", "raw")} for h in HORIZONS},
+            "v42_turnover": {"hyst": res42["turnover_hyst"], "topdec": res42["turnover_topdec"]},
             "magic": {"name": "Magic 15", "sub": "lean: quality compounders + downside protection", "pillars": {k: [[a, b] for a, b in ST.MAGIC[k]] for k in ST.LEAN},
                       "labels": ST.MAGIC_LABEL, "left_out": ST.LEFT_OUT},
             "style_bt": style_bt,
@@ -300,26 +437,6 @@ def shared():
     json.dump(S, open(OUT / "shared.json", "w"), separators=(",", ":"))
     print("shared:", len(rows), "tickers;", "live model", live, "| regime", rg["regime"], "| breadth", round(breadth, 3))
     return S
-
-def dossiers_for(tickers, force=False):
-    import intel_dossiers as I
-    p2 = pd.read_parquet(CACHE / "panel_v2.parquet")
-    now = p2.date.max(); cur = p2[(p2.date == now)].set_index("ticker"); U = cur[cur.univ]
-    W = U.reset_index().assign(date=now); S = M4.sleeves(W); S.index = U.index
-    cik = M4.ticker_cik()
-    today = pd.Timestamp.today().normalize()
-    ctx = I.contexts(cur, U, S, cik, {t: next_earnings(t, today) for t in tickers})
-    out = {}
-    for t in tickers:
-        if t not in cur.index: continue
-        row = cur.loc[t].to_dict()
-        if t not in S.index:  # outside the top-1000: rank against it on the fly
-            one = M4.sleeves(pd.concat([W, cur.loc[[t]].reset_index().assign(date=now)], ignore_index=True)).iloc[-1]
-            c = ctx(t); c.update({k: float(one[k]) for k in ("S1", "S2", "S3")})
-            out[t] = I.build_one(t, row, c, force)
-        else:
-            out[t] = I.build_one(t, row, ctx(t), force)
-    return out
 
 # ---------------- per-page files ----------------
 def page(cfg, S, dossiers):
@@ -338,7 +455,7 @@ def page(cfg, S, dossiers):
     dz = {t: d for t, d in dossiers.items() if t in own}
     earn = {t: next_earnings(t, today) for t in mine}
     data = {"meta": dict(S["meta"], page={"slug": cfg["slug"], "title": cfg["title"], "h1": cfg.get("h1", cfg["title"]),
-                                           "danelfin": dan, "show_sp500": bool(cfg.get("show_sp500", True))}, w53_keys=keys),
+                                           "danelfin": dan, "show_sp500": bool(cfg.get("show_sp500", True))}, w53_keys=keys, proxy_url=proxy_url()),
             "rows": S["rows"], "tmeta": S["tmeta"], "finalists": S["finalists"], "books": books, "w53": w53, "earn": earn, "dossiers": dz}
     if not dan:
         for rows in data["books"].values():
@@ -357,17 +474,13 @@ def main():
         S = json.load(open(OUT / "shared.json"))
     else:
         S = shared()
-    pool = {}
-    dd = CACHE / "dossiers"
-    for f in dd.glob("*.json"):
-        try: pool[f.stem] = json.load(open(f))
-        except Exception: pass
-    if "--site-only" not in args and "--no-dossiers" not in args:
-        want = set(S["finalists"])
-        for p in load_config():
-            for path in p["books"].values(): want |= {x["t"] for x in read_book(path, False)}
-        pool.update(dossiers_for(sorted(want)))
+    import intel_dossiers as I
+    pool = I.load_all()   # generated dossiers (30-day cache) with Gary's manual_overrides.json applied
     for p in pages: page(p, S, pool)
+    want = set(S["finalists"])
+    for p in load_config():
+        for path in p["books"].values(): want |= {x["t"] for x in read_book(path, False)}
+    if "--no-audit" not in args: append_audit(S, want, pool)
 
 if __name__ == "__main__":
     main()

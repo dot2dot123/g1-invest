@@ -2,42 +2,41 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>__TITLE__</title><style>__CSS__</style></head>
 <body data-page="__PAGE__">
-<header><div class="wrap" style="padding:0">
-  <div class="row" style="justify-content:space-between">
-    <div><h1>__H1__</h1><div class="sub" id="asof"></div></div>
-    <div class="row"><button id="refresh" title="Fetch live prices from Yahoo in your browser and re-score">↻ Refresh prices</button></div>
-  </div>
-  <div class="sub" id="refStatus"></div>
+<header><div class="hwrap">
+  <div class="brand"><div class="logo">G1</div><div><h1>__H1__</h1><div class="sub" id="asof"></div></div></div>
+  <div class="row"><button id="refresh" title="Fetch live prices from Yahoo in your browser and re-score every stock in this list">↻ Refresh prices</button></div>
+  <div class="sub" id="refStatus" style="flex-basis:100%"></div>
 </div></header>
 <div class="wrap">
-  <div class="disc small"><b>Personal use only, not financial advice.</b> Verdicts, price targets, sizes, stops and the cash reserve are <b>model estimates, not advice</b>. Buffett &amp; Munger and Magic 15 are rule-based proxies of published principles, not those investors' views. Business dossiers are rule-based reads of SEC filings and an <b>unvalidated</b> overlay. <a href="#" id="helpT">How to read this</a></div>
+  <div class="disc"><b>Personal use only, not financial advice.</b> Verdicts, price targets, sizes, stops and the cash plan are <b>model estimates, not advice</b>. Buffett &amp; Munger and Magic 15 are rule-based proxies of published principles, not those investors' views. Business dossiers include <b>unvalidated</b> analyst-style judgment. <a href="#" id="helpT">How to read this page</a></div>
   <div class="card small" id="help" hidden>
-    <b>G1 Score (0–100)</b>: where the stock ranks among the top 1,000 US stocks on G1's validated live score (today: the v2 composite of quality, value, low dilution and balance sheet). "v4*" adds the business-dossier overlay (S_v4 = score + 1.5 × dossier points), which <i>includes unvalidated analyst-style judgment</i>.<br>
-    <b>Upside 🚀 / Safety 🛡️</b>: v4 axes. Upside mixes growth, trend and value; Safety mixes tail risk, balance sheet and quality. They failed their pre-registered test against the composite, so treat them as descriptive.<br>
-    <b>Action verdict</b>: STRONG BUY (top 20%), ACCUMULATE (Staggered) (top 20% but up more than 15% in a month: buy half now), HOLD, CLIMAX TRIM (more than 50% above the 40-week average after a 15%+ month), SELL / BROKEN (bottom 20%, or below the 40-week average and 30% off the high).<br>
-    <b>1-yr win odds &amp; $ range</b>: how often similar-scoring stocks beat the S&amp;P 500 over 12 months out of sample, and Bear · Base · Bull dollar targets from the same backtest (10th / 50th / 90th percentile, assuming a flat S&amp;P 500).<br>
-    <b>Size</b>: half-Kelly from those odds and ranges, scaled down for high downside volatility, max 10%, halved when results are expected within 7 days. <b>Stops</b> ratchet: the 40-week average or a typical bad week, then breakeven after +20%, then a 10-week EMA trail after +40%.<br>
-    <b>Danelfin</b> (owner's pages only): sub-scores from the uploaded portfolio CSVs; <span class="ag ag-agree">Agree</span> / <span class="ag ag-disagree">Disagree</span> compares them with G1's top/bottom 20%.
+    <p><b>G1 Score (0–100)</b>: the validated quant score, a percentile among the top 1,000 US stocks. Since v4.2 it blends four slow pillars equally: Buffett &amp; Munger quality, lean Magic 15, cyclically-adjusted value (5-year median earnings yield and FCF yield vs sector peers) and trend &amp; defense (12-month momentum vs sector, low downside beta). Weak-quality names (Buffett &amp; Munger below 4/10) are capped at 65. It passed a pre-registered test against the older composite.</p>
+    <p><b>Dossier pill</b>: a separate, <i>unvalidated</i> read from one web search per company (−10…+10): moat, hidden stakes, AI threats, cyclical-peak penalty, pricing power. It never changes the G1 Score.</p>
+    <p><b>Upside / Safety</b>: percentiles (0–100) among the top 1,000 US stocks: growth, trend and value vs low tail risk, balance sheet and quality. The verdict rules use them.</p>
+    <p><b>Verdicts</b>: <span class="vd v-buy mini">STRONG BUY</span> strong score (75+), Upside 70+, Safety 60+ and price above its 40-week average. <span class="vd v-acc mini">ACCUMULATE</span> same, but up 15%+ in a month: buy half now. <span class="vd v-wait mini">WAIT FOR TREND</span> strong business in a pullback: wait for the 10-week EMA or the Deep-Value price. <span class="vd v-trim mini">CLIMAX TRIM</span> only with your Entry $: up 40%+, stretched 35% above the 40-week average on a huge-volume week that closed weak. <span class="vd v-sell mini">SELL / BROKEN</span> below the 40-week average and weak (score under 45, or falling margins with a score under 70). <span class="vd v-hold mini">HOLD</span> everything else.</p>
+    <p><b>1-yr odds</b>: how often similar-scoring stocks beat the S&amp;P 500 over 12 months, shown against the usual rate, plus Bear · Base · Bull prices. <b>Size</b>: edge over the usual rate ÷ downside volatility → Starter 1–2%, Core 3–5%, High conviction 6–8%; halved while waiting for trend or within 7 days of earnings.</p>
+    <p><b>Stops</b>: without an Entry $, an initial risk stop plus buy triggers. Type your Entry $ in a holding's details (saved only in this browser) to switch on breakeven at +20% and a 10-week EMA trail at +40%.</p>
+    <p><b>Cash plan</b>: stocks share = 0.14 ÷ the S&amp;P 500's 1-year downside volatility, between 50% and 100%; the rest in T-bills (SGOV). Danelfin (owner's page only) comes from uploaded CSVs.</p>
   </div>
   <div id="weather" class="weather"></div>
   <div class="hero"><input type="text" id="q" placeholder="🔎 Look up any US stock, e.g. CRWD" autocapitalize="characters"><button id="go">Look up</button></div>
   <div id="searchOut"></div>
   <div class="tabs" id="tabs"></div>
   <div class="card small" id="health" hidden></div>
-  <div class="row" style="justify-content:space-between;margin:6px 0"><input type="text" id="flt" placeholder="Filter list" style="max-width:200px"><span class="small muted" id="count"></span></div>
+  <div class="listbar"><input type="text" id="flt" placeholder="Filter this list" style="max-width:220px"><span class="small muted" id="count"></span></div>
   <div class="tblwrap" id="tbl"></div>
   <details class="card" style="margin-top:16px"><summary>How well does it work? Backtests, method and caveats</summary>
     <div id="bt"></div>
     <details><summary class="small">Method, data and limitations</summary><div class="small">
-  <p><b>Live score.</b> G1 v4 tested a five-sleeve engine (quality, value vs adjusted EV, growth and inflection, trend and volatility coil, left-tail shield) blended by market regime (S_quant), against the v2 composite. The rules were committed before the test (docs/PREREGISTRATION_V4.md). S_quant did not beat the composite, so <b>the v2 composite stays the live score</b>. Upside and Safety are shown for context only. Names without SEC fundamentals (ETFs, some foreign or multi-class filers) use the price-only score (momentum, drawdown, volatility contraction, downside beta and tail loss).</p>
-  <p><b>No look-ahead.</b> Fundamentals come from SEC XBRL companyfacts, using the first-filed value for each period, usable 2 days after filing. Regime inputs (S&amp;P 500 vs its 40-week average; ICE BofA high-yield spread from FRED, free history since Nov 2023) are taken as of each date. Insider-buying clusters come from SEC's free Form 4 data sets.</p>
-  <p><b>Survivorship.</b> The free-data universe holds only companies still trading today, so the −30% delisting haircut never triggered in the test, and results are flattered by survivorship. Most of the edge comes from 2020–2022. The 36–60 month results rest on very few independent periods.</p>
-  <p><b>Market Weather.</b> Sunny = S&amp;P 500 above its 40-week average and the high-yield spread below 4.5%. Storm Warning = below the average or spread above 5.5%. Cloudy = in between. Storm: preserve cash = below the average with fewer than 35% of large stocks above theirs; the page then suggests a 30–50% T-bill reserve and pauses new buys. "Clearing after the storm" (CAPITULATION BUY) needs a 15%+ drawdown, breadth recovering above 40% and spreads easing.</p>
-  <p><b>Business dossiers.</b> Built for the books and the G1 Top 30 from SEC filings data (no paid data, no LLM), cached 14 days. Five rule-based scores: moat vs disruption, hidden stakes, talent and R&amp;D, pricing power and backlog, and variant perception gap. Each comes with source links, and thin evidence scores 0. They are not point-in-time and cannot be backtested.</p>
-  <p><b>Refresh.</b> Pulls 5 years of weekly prices per name from Yahoo in your browser (AllOrigins proxy if Yahoo blocks it) and recomputes price-based features and valuation with the bundled fundamentals. Volatility-contraction and up/down-volume inputs use daily data as of the build. Nothing runs on a schedule.</p>
+  <p><b>Live score.</b> G1 v4.2 (docs/PREREGISTRATION_V4_2.md) was pre-registered before any result, has no fitted parameters, and beat the v2 composite's rank IC at all six horizons with lower turnover. Names without SEC fundamentals (ETFs, some foreign or newly listed companies) use a price-only score.</p>
+  <p><b>No look-ahead.</b> Fundamentals come from SEC XBRL (first-filed values, usable 2 days after filing). Regime inputs (S&amp;P 500 vs its 40-week average; high-yield spread from FRED, free history since Nov 2023) are taken as of each date.</p>
+  <p><b>Survivorship.</b> The free-data universe holds only companies still trading, so results are flattered and the delisting haircut never triggered. Long horizons rest on few independent periods.</p>
+  <p><b>Execution rules.</b> Verdicts, stops, sizes and the cash plan are simple, transparent UI rules written down in advance; they were not backtested.</p>
+  <p><b>Business dossiers.</b> One free web search per company plus an analyst-style JSON judgment, cached 30 days, every claim linked to a source. They penalize cyclical-peak earnings (e.g. memory chips, commodities, shippers at record margins), reward hidden stakes (e.g. Waymo, Anthropic) and flag AI/agent threats. Not point-in-time; tracked live in a weekly audit ledger.</p>
+  <p><b>Refresh.</b> Pulls 5 years of weekly prices per name in your browser: G1's own proxy if configured, otherwise Yahoo directly, then free CORS proxies (corsproxy.io, codetabs, AllOrigins), each with a timeout. Nothing runs on a schedule.</p>
   </div></details>
   </details>
-  <p class="small muted">G1 · Gary A · personal use only · not financial advice.</p>
+  <footer>G1 · Gary A · personal use only · not financial advice · model estimates, not advice</footer>
 </div>
 <script id="g1data" type="application/json">__DATA__</script>
 <script>__JS__</script>

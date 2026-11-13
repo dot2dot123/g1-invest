@@ -1,183 +1,129 @@
-"""Business-intelligence dossiers (G1 v4 overlay; rules frozen in docs/PREREGISTRATION_V4.md section 10).
+"""G1 v4.2 business dossiers: 1 web search + a structured-JSON analyst judgment per ticker (docs/PREREGISTRATION_V4_2.md).
 
-Free public sources only: SEC XBRL facts already on disk, plus the SEC submissions API (recent filings, with links).
-Each dossier is cached at cache/dossiers/{T}.json for 14 days. The scoring is rule-based and every claim carries a
-source link. Optional analyst notes in cache/dossiers/notes/{T}.json may override a sub-score, but only if they cite
-URLs. With thin evidence a sub-score is 0 and the dossier says so.
+How dossiers get made (no paid API):
+  The repo has no LLM or search API key and G1 uses no paid services, so this script cannot call a model by itself.
+  Dossiers are produced when Gary asks his Grok Bot: the bot runs ONE free web search per ticker, writes the judgment
+  as JSON following PROMPT below, and saves it with `python intel_dossiers.py --ingest FILE.json` (FILE holds one
+  dossier or a list). `python intel_dossiers.py --pending` lists names that are missing or older than 30 days
+  (holdings in config/users.json + the G1 Top 30). `python analyze_ticker.py T` prints the brief for one name.
 
-The overlay is NOT point-in-time and cannot be backtested, so f_strat is an unvalidated overlay. It feeds S_v4 only,
-never S_quant, verdicts, sizes or stops.
+Cache: cache/dossiers/{T}.json (30-day TTL, gitignored). Gary's private notes: cache/dossiers/manual_overrides.json
+(gitignored), e.g. {"MU": {"note": "...", "f_strat": 2, "bear_case": "..."}}. Any field there wins over the generated
+dossier and survives every rebuild.
 
-Run for the configured books plus the top-30 finalists: `python intel_dossiers.py [--force]`.
-Run for one ticker: `python analyze_ticker.py T`."""
-import json, sys, time, datetime as dt, urllib.request
-import numpy as np, pandas as pd
+The overlay is NOT point-in-time and cannot be backtested: f_strat is an unvalidated secondary pill, never added into
+the G1 Score, verdicts, sizes or stops."""
+import json, sys, datetime as dt
 from common import *
 
-DOSS = CACHE / "dossiers"; NOTES = DOSS / "notes"
-TTL_DAYS = 14
-RANGES = {"moat": (-2, 2), "stakes": (0, 3), "talent": (-1, 2), "pricing": (-2, 2), "variant": (-2, 2)}
-LABELS = {"moat": "Moat vs disruption", "stakes": "Hidden stakes / SOTP", "talent": "Talent density & R&D",
-          "pricing": "Pricing power & backlog", "variant": "Variant perception gap"}
-FORM_NAMES = {"10-K": "annual report", "10-Q": "quarterly report", "8-K": "current report", "DEF 14A": "proxy statement",
-              "S-1": "registration", "SC 13D": "activist stake", "SC 13G": "passive 5% stake", "4": "insider trade"}
-ITEM_8K = {"1.01": "material agreement", "1.02": "agreement terminated", "2.01": "acquisition/disposition completed",
-           "2.02": "results of operations", "2.05": "restructuring costs", "2.06": "impairment", "3.01": "listing notice",
-           "4.02": "non-reliance on prior financials", "5.02": "officer/director change", "7.01": "Reg FD disclosure",
-           "8.01": "other events", "9.01": "exhibits"}
+DOSS = CACHE / "dossiers"; OVR = DOSS / "manual_overrides.json"
+TTL_DAYS = 30
+SCHEMA = 2
+RANGES = {"moat": (-2, 2), "hidden_stakes": (0, 3), "ai_threat": (-3, 1), "cyclical": (-3, 0), "pricing": (-2, 2), "variant": (-2, 2)}
 
-def _nz(x):
-    try: x = float(x)
-    except Exception: return None
-    return None if (np.isnan(x) or np.isinf(x)) else x
+PROMPT = """You are writing a G1 business dossier for {T} ({NAME}). Use ONE web search, then answer ONLY with JSON:
+{
+ "ticker": "{T}", "bull_case": "...", "bear_case": "...",          <- write BOTH cases first, before any score
+ "scores": {"moat": -2..2, "hidden_stakes": 0..3, "ai_threat": -3..1, "cyclical": -3..0, "pricing": -2..2, "variant": -2..2},
+ "flags": {"cyclical_peak": true|false, "hidden_sotp": "short text or null", "ai_threat": "short text or null"},
+ "thin": ["sub-scores with too little evidence (score them 0)"],
+ "sources": [{"title": "...", "url": "https://..."}]                <- every claim must come from a cited source
+}
+Rules:
+- Never invent facts. If evidence for a sub-score is thin, score it 0 and list it in "thin".
+- CYCLICAL PEAKS: memory/commodity chipmakers, miners, energy, shippers, chemicals, homebuilders, autos and similar at
+  record or near-record margins with a single-digit or low P/E are cyclical peaks, NOT permanent moats. Set
+  flags.cyclical_peak = true, cyclical = -2 or -3, and never give such names moat > +1 for the peak margins alone.
+- HIDDEN SOTP STAKES: reward real, cited stakes the market under-counts (e.g. Waymo in Alphabet, Anthropic stakes in
+  Amazon/Alphabet, listed holdings, spin-off candidates) with hidden_stakes +1..+3 and describe them in flags.hidden_sotp.
+- AI / AGENTIC MOAT THREATS: penalize businesses whose moat is a seat-based or workflow product that AI agents can
+  replace (e.g. Claude in Sheets vs Office, AI coding agents vs dev tools, agentic search vs ads/travel/directories):
+  ai_threat -1..-3 with flags.ai_threat. Clear AI beneficiaries may get +1.
+- f_strat is computed by the script as the clamped sum (-10..+10); do not output it."""
 
-def facts_url(cik): return f"https://data.sec.gov/api/xbrl/companyfacts/CIK{int(cik):010d}.json"
-def filing_index(cik): return f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={int(cik):010d}&type=&dateb=&owner=include&count=40"
+def _path(t): return DOSS / f"{t}.json"
 
-def recent_filings(cik, n=12):
-    """Recent SEC filings from the free submissions API (cached inside the dossier)."""
-    url = f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": SEC_UA})
-        js = json.loads(urllib.request.urlopen(req, timeout=30).read()); time.sleep(0.15)
-    except Exception:
-        return [], url
-    r = js.get("filings", {}).get("recent", {})
-    out = []
-    for i in range(min(len(r.get("form", [])), 200)):
-        f = r["form"][i]
-        if f not in ("10-K", "10-Q", "8-K", "DEF 14A", "SC 13D", "SC 13D/A", "S-1"): continue
-        acc = r["accessionNumber"][i].replace("-", "")
-        link = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc}/{r['primaryDocument'][i]}"
-        out.append({"form": f, "date": r["filingDate"][i], "items": r.get("items", [""] * 999)[i], "url": link})
-        if len(out) >= n: break
-    return out, url
+def overrides():
+    try: return json.load(open(OVR)) if OVR.exists() else {}
+    except Exception: return {}
 
-def score(row, ctx):
-    """Rule-based sub-scores from point-in-time features at the build date. Returns scores, evidence and thin flags."""
-    g = lambda k: _nz(row.get(k))
-    s, ev, thin = {}, [], []
-    cik = ctx.get("cik"); src = facts_url(cik) if cik else None
-    # 1. moat vs disruption
-    m = 0; used = 0
-    if g("roic_5y_med") is not None:
-        used += 1
-        if g("roic_5y_med") >= 0.15: m += 1; ev.append(("moat", f"5-year median ROIC {g('roic_5y_med'):.0%} (≥15%)", src))
-    gm, gm75, oms, oms50 = g("gm"), ctx.get("gm75"), g("om_stab"), ctx.get("oms50")
-    if gm is not None and gm75 is not None and oms is not None and oms50 is not None:
-        used += 1
-        if gm >= gm75 and oms >= oms50: m += 1; ev.append(("moat", f"Gross margin {gm:.0%} in its sector's top quartile with steadier-than-median operating margins", src))
-    if g("rev_g1") is not None and g("inc_gm") is not None:
-        used += 1
-        if g("rev_g1") < 0 and g("inc_gm") < 0: m -= 1; ev.append(("moat", f"Revenue {g('rev_g1'):+.0%} YoY with gross margin down {g('inc_gm')*100:+.1f} pp: possible disruption", src))
-    if g("rev_g3") is not None:
-        used += 1
-        if g("rev_g3") < 0: m -= 1; ev.append(("moat", f"3-year revenue CAGR {g('rev_g3'):+.1%}", src))
-    s["moat"] = m if used >= 2 else 0
-    if used < 2: thin.append("moat")
-    # 2. hidden stakes (XBRL non-operating investments vs market cap)
-    st = 0; nop, mcap = g("non_op_inv"), g("mcap")
-    if nop is not None and mcap and mcap > 0 and nop > 0:
-        r = nop / mcap; st = 3 if r >= 0.5 else 2 if r >= 0.25 else 1 if r >= 0.10 else 0
-        if st: ev.append(("stakes", f"Investments outside operations ${nop/1e9:,.1f}B = {r:.0%} of market cap (XBRL LongTermInvestments / EquityMethodInvestments / ShortTermInvestments)", src))
-    else: thin.append("stakes")
-    s["stakes"] = st
-    # 3. talent density & R&D
-    t_ = 0; rdi, roi = g("rd_int"), g("rd_roi")
-    if rdi is not None and rdi > 0 and roi is not None:
-        if rdi >= (ctx.get("rdi50") or 1e9) and roi > 0: t_ += 1; ev.append(("talent", f"R&D {rdi:.0%} of revenue (≥ sector median) with positive revenue return on R&D", src))
-        if roi >= (ctx.get("roi75") or 1e9): t_ += 1; ev.append(("talent", f"Revenue growth per $ of prior-year R&D {roi:.2f}× (top quartile)", src))
-        if roi < 0: t_ -= 1; ev.append(("talent", f"Revenue fell despite R&D spend (rd_roi {roi:.2f})", src))
-    else: thin.append("talent")
-    s["talent"] = t_
-    # 4. pricing power & backlog
-    p = 0; ig, dr, rg = g("inc_gm"), g("def_rev_g1"), g("rev_g1")
-    if ig is not None:
-        if ig > 0: p += 1; ev.append(("pricing", f"Gross margin up {ig*100:.1f} pp YoY", src))
-        if ig < -0.02: p -= 1; ev.append(("pricing", f"Gross margin down {ig*100:.1f} pp YoY", src))
-    if dr is not None:
-        if rg is not None and dr > rg and dr > 0: p += 1; ev.append(("pricing", f"Deferred revenue / contract liabilities {dr:+.0%} YoY, ahead of revenue {rg:+.0%} (backlog building)", src))
-        if dr < -0.10: p -= 1; ev.append(("pricing", f"Deferred revenue / contract liabilities {dr:+.0%} YoY", src))
-    if ig is None and dr is None: thin.append("pricing")
-    s["pricing"] = max(-2, min(2, p))
-    # 5. variant perception gap (quality/growth rank vs cheapness rank)
-    v = 0
-    if ctx.get("S1") is not None and ctx.get("S3") is not None and ctx.get("S2") is not None:
-        gap = (ctx["S1"] + ctx["S3"]) / 2 - (1 - ctx["S2"])
-        v = 2 if gap >= 0.30 else 1 if gap >= 0.15 else -2 if gap <= -0.30 else -1 if gap <= -0.15 else 0
-        ev.append(("variant", f"Quality/growth rank {(ctx['S1']+ctx['S3'])/2:.0%} vs valuation-implied rank {1-ctx['S2']:.0%} in its sector (gap {gap:+.2f})", src))
-    else: thin.append("variant")
-    s["variant"] = v
-    return s, ev, thin
-
-def apply_notes(t, s, ev):
-    f = NOTES / f"{t}.json"
-    if not f.exists(): return s, ev, None
-    n = json.load(open(f)); used = []
-    for k, o in (n.get("scores") or {}).items():
-        if k in RANGES and o.get("sources"):
-            lo, hi = RANGES[k]; s[k] = int(max(lo, min(hi, o["value"]))); used.append(k)
-            ev.append((k, o.get("why", "analyst note"), o["sources"][0]))
-    return s, ev, {"used": used, "sotp_usd": n.get("sotp_usd") if n.get("sotp_sources") else None, "sotp_sources": n.get("sotp_sources")}
-
-def text_fields(t, row, s, ev, filings, ctx):
-    g = lambda k: _nz(row.get(k))
-    ey, sec_ey = g("ey_adj_ev"), ctx.get("ey_med")
-    if ey and ey > 0 and sec_ey and sec_ey > 0:
-        consensus = f"Market prices it at {1/ey:.0f}× adjusted-EV/EBIT vs a sector median near {1/sec_ey:.0f}×, i.e. {'a premium' if ey < sec_ey else 'a discount'} to peers."
-    elif ey is not None and ey <= 0:
-        consensus = "No positive operating earnings (EBIT), so the price rests on future profits."
-    else:
-        consensus = "Too little data to read the market-implied multiple."
-    pos = [e[1] for e in ev if e[0] in ("moat", "pricing", "talent", "stakes") and not e[1].startswith(("Revenue fell", "Gross margin down", "3-year revenue", "Deferred revenue / contract liabilities -"))]
-    variant = (f"Variant gap {s['variant']:+d}: " + (pos[0] if pos else "no clear business-quality edge in the filings")) if s["variant"] > 0 else \
-              (f"Variant gap {s['variant']:+d}: valuation already prices in more quality/growth than the filings show" if s["variant"] < 0 else "No clear gap between valuation and business quality.")
-    threats = []
-    if g("rev_g1") is not None and g("rev_g1") < 0: threats.append(f"revenue {g('rev_g1'):+.0%} YoY")
-    if g("inc_gm") is not None and g("inc_gm") < -0.02: threats.append(f"gross margin {g('inc_gm')*100:+.1f} pp")
-    if g("lev") is not None and g("lev") > 0.5: threats.append(f"debt {g('lev'):.0%} of assets")
-    if g("dil_1y") is not None and g("dil_1y") > 0.03: threats.append(f"share count {g('dil_1y'):+.0%} YoY")
-    if any(("4.02" in (f.get("items") or "")) for f in filings): threats.append("an 8-K item 4.02 (non-reliance on prior financials)")
-    cats = []
-    for f in filings[:6]:
-        if f["form"] == "8-K":
-            its = [ITEM_8K.get(i.strip()) for i in (f.get("items") or "").split(",") if ITEM_8K.get(i.strip()) and i.strip() not in ("9.01",)]
-            if its: cats.append(f"{f['date']} 8-K: {', '.join(its)}")
-        elif f["form"] in ("10-K", "10-Q"): cats.append(f"{f['date']} {f['form']} filed")
-    if ctx.get("next_earn"): cats.insert(0, f"next results expected about {ctx['next_earn']} (estimate from SEC filing history)")
-    return consensus, variant, ("; ".join(threats) or "none flagged in the filings data"), ("; ".join(cats[:4]) or "no recent filings found")
-
-def build_one(t, row, ctx, force=False):
-    DOSS.mkdir(parents=True, exist_ok=True)
-    f = DOSS / f"{t}.json"
-    if f.exists() and not force:
-        d = json.load(open(f))
-        if (dt.date.today() - dt.date.fromisoformat(d["built"])).days < TTL_DAYS: return d
-    s, ev, thin = score(row, ctx)
-    s, ev, note = apply_notes(t, s, ev)
-    filings, sub_url = recent_filings(ctx["cik"]) if ctx.get("cik") else ([], None)
-    cons, var, thr, cat = text_fields(t, row, s, ev, filings, ctx)
-    f_strat = max(-10, min(10, sum(s.values())))
-    sources = sorted({e[2] for e in ev if e[2]} | ({sub_url} if sub_url else set()) | {x["url"] for x in filings[:6]})
-    d = {"t": t, "built": dt.date.today().isoformat(), "ttl_days": TTL_DAYS, "scores": s, "f_strat": f_strat,
-         "thin": thin, "evidence": [{"k": k, "claim": c, "src": u} for k, c, u in ev],
-         "consensus_view": cons, "variant_edge": var, "top_threats": thr, "catalysts": cat,
-         "filings": filings[:6], "sources": sources, "note": note,
-         "method": "Rule-based from SEC filings data (no LLM); unvalidated overlay, not point-in-time."}
-    json.dump(d, open(f, "w"), indent=1)
+def finalize(d):
+    """Validate, clamp and score one dossier dict (in place). f_strat = clamp(sum(sub-scores), -10, 10)."""
+    s = d.setdefault("scores", {})
+    for k, (lo, hi) in RANGES.items():
+        v = s.get(k, 0)
+        try: v = int(round(float(v)))
+        except Exception: v = 0
+        s[k] = max(lo, min(hi, v))
+    d["thin"] = [k for k in d.get("thin", []) if k in RANGES]
+    for k in d["thin"]: s[k] = 0
+    d["f_strat"] = max(-10, min(10, sum(s.values())))
+    d.setdefault("flags", {}); d["flags"].setdefault("cyclical_peak", False)
+    d["thin_all"] = len(d["thin"]) >= 4 or not d.get("sources")
+    if d["thin_all"]: d["f_strat"] = 0
+    if not d.get("bull_case") or not d.get("bear_case"): raise ValueError(f"{d.get('ticker')}: bull_case and bear_case are required")
+    d["sources"] = [x for x in d.get("sources", []) if isinstance(x, dict) and str(x.get("url", "")).startswith("http")]
+    d["schema"] = SCHEMA
+    d.setdefault("built", str(dt.date.today()))
+    d.setdefault("method", "1 web search + analyst-style judgment (Grok Bot), unvalidated")
     return d
 
-def contexts(cur, U, sleeves_now, cik_of, next_earn):
-    """Sector reference points for the rules (current top-1000 universe)."""
-    q = {}
-    for sec, g in U.groupby("sector"):
-        r = g[g.rd_int > 0]
-        q[sec] = {"gm75": _nz(g.gm.quantile(.75)), "oms50": _nz(g.om_stab.median()), "ey_med": _nz(g.ey_adj_ev.median()),
-                  "rdi50": _nz(r.rd_int.median()) if len(r) >= 5 else None, "roi75": _nz(r.rd_roi.quantile(.75)) if len(r) >= 5 else None}
-    def ctx(t):
-        sec = cur.loc[t, "sector"] if t in cur.index else None
-        c = dict(q.get(sec, {})); c["cik"] = cik_of.get(t); c["next_earn"] = next_earn.get(t)
-        if t in sleeves_now.index:
-            for k in ("S1", "S2", "S3"): c[k] = _nz(sleeves_now.loc[t, k])
-        return c
-    return ctx
+def ingest(path):
+    data = json.load(open(path)); data = data if isinstance(data, list) else [data]
+    DOSS.mkdir(parents=True, exist_ok=True); n = 0
+    for d in data:
+        d = finalize(dict(d)); t = d["ticker"].upper().replace("-", ".")
+        d["ticker"] = t; json.dump(d, open(_path(t), "w"), indent=1); n += 1
+    print("ingested", n, "dossiers")
+
+def load(t, apply_overrides=True):
+    f = _path(t)
+    if not f.exists(): return None
+    try: d = json.load(open(f))
+    except Exception: return None
+    if d.get("schema") != SCHEMA: return None
+    o = overrides().get(t) if apply_overrides else None
+    if o:
+        d = dict(d); d.update({k: v for k, v in o.items() if k != "scores"})
+        if "scores" in o: d["scores"] = dict(d.get("scores", {}), **o["scores"]); 
+        if "f_strat" not in o and "scores" in o: d["f_strat"] = max(-10, min(10, sum(d["scores"].values())))
+        d["override"] = True
+    return d
+
+def load_all():
+    out = {}
+    for f in DOSS.glob("*.json"):
+        if f.name == OVR.name: continue
+        d = load(f.stem)
+        if d: out[f.stem] = d
+    for t, o in overrides().items():   # a note on a name without a generated dossier still shows up
+        if t not in out and o.get("bull_case") and o.get("bear_case"):
+            out[t] = finalize(dict(o, ticker=t, method="Gary's manual notes"))
+    return out
+
+def stale(t, today=None):
+    d = load(t, False)
+    if not d: return True
+    today = today or dt.date.today()
+    return (today - dt.date.fromisoformat(d["built"])).days > TTL_DAYS
+
+def wanted():
+    import build_site as B
+    S = json.load(open(ROOT / "build" / "data" / "shared.json"))
+    w = set(S["finalists"])
+    for p in B.load_config():
+        for path in p["books"].values(): w |= {x["t"] for x in B.read_book(path, False)}
+    return sorted(w), S
+
+def brief(t, S=None):
+    name = (S["tmeta"].get(t) or [None] * 7)[6] if S else ""
+    return PROMPT.replace("{T}", t).replace("{NAME}", name or t)
+
+if __name__ == "__main__":
+    a = sys.argv[1:]
+    if a and a[0] == "--ingest": ingest(a[1])
+    elif a and a[0] == "--pending":
+        w, S = wanted(); p = [t for t in w if stale(t)]
+        print(len(p), "of", len(w), "dossiers missing or older than", TTL_DAYS, "days")
+        if "--names" in a: print(" ".join(p))
+    else: print(__doc__)
