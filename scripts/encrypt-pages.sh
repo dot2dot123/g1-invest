@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Encrypt every configured page (config/users.json) from build/clear/ with StatiCrypt, each with its own password file.
 # Passwords are read from files (never hardcoded, never printed). Usage: scripts/encrypt-pages.sh [SLUG]
+# G1_NO_ENCRYPT=1 scripts/encrypt-pages.sh  -> TEMPORARY: publish the cleartext pages without a password (owner request only).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -26,6 +27,12 @@ encrypt_one() {
 n=0
 while IFS='|' read -r slug out pass_file; do
   [[ -z "$ONLY" || "$ONLY" == "$slug" ]] || continue
+  if [[ "${G1_NO_ENCRYPT:-0}" == "1" ]]; then
+    clear="build/clear/${out}index.html"; dest="$ROOT/${out}index.html"
+    [[ -f "$clear" ]] || { echo "Run pipeline/render.py first ($clear missing)" >&2; exit 1; }
+    mkdir -p "$(dirname "$dest")"; cp "$clear" "$dest"; echo "UNENCRYPTED (G1_NO_ENCRYPT=1) -> ${out}index.html"
+    n=$((n+1)); continue
+  fi
   [[ -f "$pass_file" ]] || { echo "Missing password file for page $slug" >&2; exit 1; }
   PASSWORD="$(tr -d '\r\n' < "$pass_file")"
   [[ -n "$PASSWORD" ]] || { echo "Password file is empty for page $slug" >&2; exit 1; }
@@ -39,4 +46,4 @@ while IFS='|' read -r slug out pass_file; do
   n=$((n+1))
 done < <(cd pipeline && "$PY" -c 'from build_site import load_config
 for p in load_config(): print(p["slug"], p["output_path"], p["password_file"], sep="|")')
-echo "Leak check passed ($n page(s))."
+if [[ "${G1_NO_ENCRYPT:-0}" == "1" ]]; then echo "Published $n page(s) WITHOUT encryption."; else echo "Leak check passed ($n page(s))."; fi
