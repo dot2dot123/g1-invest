@@ -165,3 +165,5 @@ All bands are the live score's out-of-sample decile bands for the selected horiz
 ---
 ## Results
 (appended after testing)
+
+**2026-11-12 22:15 PST: superseded by docs/PREREGISTRATION_V4.md before any v3 feature run or test. No v3 results were computed.**
