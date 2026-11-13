@@ -4,3 +4,4 @@ pyarrow
 scikit-learn
 scipy
 requests
+playwright  # optional: scripts/verify_live.py
