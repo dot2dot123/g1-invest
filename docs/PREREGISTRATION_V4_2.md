@@ -83,3 +83,29 @@ the Market Weather (SPY vs 40w SMA) banner; when Bear Preservation is active the
 Dossiers: bull_case and bear_case written before f_strat (-10..+10); f_strat is an unvalidated secondary pill, never
 added into the headline score. Live audit ledger: cache/live_audit.jsonl, one row per (ISO week, ticker) for book
 holdings + finalists: date, ticker, quant_score, dossier_score, verdict, price; appended on each build, no cron.
+
+## 5. Results (appended after the run; nothing above was changed)
+
+Run: pipeline/model_v42.py, evaluation dates 2014-01 onward, wide universe. Primary = haircut + hysteresis drag labels.
+
+| h | V42 IC (t) | A IC (t) | V42 TMB | A TMB | V42 top-decile p10 | A p10 |
+|---|---|---|---|---|---|---|
+| 6m | .047 (2.23) | .036 (2.41) | +.004 | +.015 | -.194 | -.222 |
+| 12m | .061 (2.27) | .049 (2.24) | -.006 | +.022 | -.279 | -.306 |
+| 24m | .092 (2.83) | .076 (2.20) | -.007 | +.035 | -.386 | -.410 |
+| 36m | .116 (4.05) | .090 (2.39) | +.003 | +.057 | -.460 | -.495 |
+| 48m | .132 (4.38) | .104 (2.64) | +.047 | +.117 | -.537 | -.566 |
+| 60m | .125 (3.23) | .108 (2.76) | +.053 | +.126 | -.601 | -.633 |
+
+Raw labels: IC identical (the haircut never triggers in this survivor panel); raw TMB V42 / A: 6m +.004/+.016,
+12m -.005/+.023, 24m -.005/+.037, 36m +.005/+.061, 48m +.050/+.122, 60m +.057/+.132.
+
+Turnover with hysteresis (enter top 15%, hold to top 35%): V42 0.031/month, A 0.048/month (ratio 0.65).
+Plain top-decile turnover: V42 0.133, A 0.134.
+
+**Verdict: PASS** (IC beats A at 6/6 horizons; turnover ratio 0.65 <= 1.2). V42 becomes the live G1 Quant Score.
+
+Caveat (reported, not acted on): V42's top-minus-bottom decile spread is much smaller than A's at every horizon, and
+negative at 12m and 24m, even though its rank IC and top-decile p10 are better. V42 ranks the whole cross-section
+better and its top decile has milder left tails, but it does not concentrate the biggest winners in its top decile the
+way A does. Treat the headline score as a broad ranking and downside filter, not a "pick the top 10%" signal.
