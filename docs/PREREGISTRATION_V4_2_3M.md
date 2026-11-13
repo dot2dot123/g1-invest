@@ -47,4 +47,13 @@ Results are appended below this line (and in `cache/model_v42_3m_results.json`, 
 
 ## 5. Results (appended after the run; nothing above was changed)
 
-*(not yet run)*
+Run: `pipeline/model_v42_3m.py`, after this document was committed as `d154326` (2026-11-13 15:21 America/Los_Angeles). Evaluation dates 2014-01 onward, 151 month-ends, wide universe. Primary = haircut + hysteresis drag labels.
+
+| model | IC (t) | TMB | top-decile p10 | hysteresis turnover |
+|---|---|---|---|---|
+| V42 | .031 (1.96) | +.002 | -.134 | .031 |
+| A | .023 (2.05) | +.008 | -.151 | .048 |
+
+Raw labels: IC identical (the haircut does not move the rank IC here); raw TMB V42 +.002 / A +.008.
+
+**Winner: V42** (higher primary rank IC: .031 > .023). **unvalidated: yes** (t(V42) = 1.96 < 2). A's *t* is 2.05, but A is not the winner under the frozen IC rule. The live headline G1 Score is unchanged (still V42 from the 6–60m test). The 3-month G1 cell uses V42 and is marked unvalidated.

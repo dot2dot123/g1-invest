@@ -69,6 +69,21 @@ tr.det td{background:#fbfcfe;padding:14px 16px}
 .dgrid ul{margin:4px 0 4px 18px;padding:0}
 .hzrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}.hzbox{display:flex;flex-direction:column;align-items:center;gap:2px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:4px 8px}
 .ch{font-weight:700}
+.scorecell{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;max-width:100%}
+.hzstrip{display:flex;gap:2px;flex-wrap:nowrap;margin-top:2px;width:100%;max-width:100%;box-sizing:border-box}
+.hzmini{flex:1 1 0;min-width:0;text-align:center;border:1px solid var(--line);border-radius:6px;padding:2px 1px 3px;background:#f8fafc;box-sizing:border-box}
+.hzmini.hz3{flex:1.7 1 0}
+.hzmini .lbl{font-size:9px;color:var(--mut);font-weight:700;letter-spacing:.03em;line-height:1.1}
+.hzmini .n{display:block;font-size:11px;font-weight:800;line-height:1.25;border-radius:4px;padding:1px 0}
+.hz3pair{display:flex;justify-content:space-around;align-items:flex-end;gap:2px}
+.hz3pair span{display:flex;flex-direction:column;align-items:center;min-width:0}
+.hz3pair .sub{font-size:8px;color:var(--mut);font-weight:700;line-height:1}
+.hz3pair .n{min-width:16px;padding:1px 2px}
+.hz3pair .n.dfn{background:#eef2ff;color:#312e81}
+.hzmini.unval .n{box-shadow:inset 0 -1px 0 #94a3b8}
+.hzmini sup.uv{font-size:8px;color:#64748b;font-weight:700}
+.hzleg,.hzagr{margin:6px 0 8px;color:#334155}
+.hzagr{margin-top:0}
 .stops>div{margin:2px 0}
 .entry{margin:6px 0}.entry input{width:130px;padding:6px 10px;font-size:14px}
 .doss{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
@@ -78,11 +93,14 @@ footer{color:var(--mut);font-size:12.5px;margin-top:20px}
 /* mobile: table rows become cards */
 @media (max-width:760px){
   header{position:static}.banners{grid-template-columns:1fr}.hero{flex-direction:column}.hero button{width:100%}
-  table.main thead{display:none}table.main,table.main tbody,table.main tr,table.main td{display:block;width:100%}
-  table.main tr[data-x]{display:grid;grid-template-columns:1fr auto;gap:6px 10px;padding:12px;border-bottom:1px solid var(--line)}
-  table.main td{border:0;padding:0}
+  table.main thead{display:none}table.main,table.main tbody,table.main tr,table.main td{display:block;width:100%;max-width:100%;box-sizing:border-box}
+  table.main tr[data-x]{display:grid;grid-template-columns:1fr auto;gap:6px 10px;padding:12px;border-bottom:1px solid var(--line);max-width:100%;min-width:0;box-sizing:border-box}
+  table.main td{border:0;padding:0;min-width:0;max-width:100%;box-sizing:border-box}
   table.main td[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
   table.main td[data-l="Stock"]{grid-column:1/2}table.main td[data-l="Verdict"]{grid-column:2/3;text-align:right}
-  table.main td[data-l="Upside · Safety"],table.main td[data-l="1-yr odds"]{grid-column:1/3}
+  table.main td[data-l="G1 Score"],table.main td[data-l="Upside · Safety"],table.main td[data-l="1-yr odds"],table.main td[data-l="Size"]{grid-column:1/3}
   tr.det td{display:block}.bar{width:100%}td .nm{max-width:60vw}
+  .hzstrip{flex-wrap:nowrap;gap:2px}
+  .tblwrap{overflow-x:hidden}
+  body{overflow-x:hidden}
 }

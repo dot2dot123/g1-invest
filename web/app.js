@@ -3,6 +3,8 @@
   // G1 v4 dashboard. All formulas mirror pipeline/build_site.py live_scores() and docs/PREREGISTRATION_V4.md.
   const D = JSON.parse(document.getElementById("g1data").textContent);
   const M = D.meta, HZ = M.horizons, P = M.page;
+  const HZ_STRIP = M.hz_strip || [3, ...HZ];
+  const HZ_LBL = (h) => (h < 12 ? h + "m" : (h / 12) + "y");
   const $ = (id) => document.getElementById(id);
   const LS_KEY = "g1.research.v1"; // watchlist (kept from v1-v3; entries migrate automatically)
   const POS_KEY = "g1.positions.v1"; // browser-only Entry $ per ticker; never leaves this browser
@@ -94,7 +96,9 @@
     return o;
   }
   function calib(score, model, h) {
-    const s = qpct(score, M.pq[model]), cal = M.cal[h][model], mids = cal.map((c) => c.mid), o = { pct: s };
+    const cal = M.cal && M.cal[h] && M.cal[h][model];
+    if (score == null || !cal || !M.pq[model]) return null;
+    const s = qpct(score, M.pq[model]), mids = cal.map((c) => c.mid), o = { pct: s };
     ["hit", "p10", "p50", "p90"].forEach((k) => (o[k] = interp(s, mids, cal.map((c) => c[k]))));
     return o;
   }
@@ -120,8 +124,11 @@
     if (m.fund) { const v = v42Of(f, m.sector); r.V42 = v.V42; r.v42 = v; } else r.V42 = null;
     const model = m.fund ? M.live : "S_price";
     const raw = r[model], bands = {};
-    HZ.forEach((h) => (bands[h] = calib(raw, model, h)));
-    const pct = bands[12].pct;
+    HZ_STRIP.forEach((h) => {
+      const mdl = (h === 3 && M.v42_3m && m.fund) ? M.v42_3m.winner : model;
+      bands[h] = calib(r[mdl], mdl, h);
+    });
+    const pct = bands[12] ? bands[12].pct : null;
     const quant = model === "A" ? 100 * pct : raw;   // validated headline score, 0-100
     const dz = D.dossiers[t];
     // Upside / Safety as percentiles among the top-1,000 universe (same scale as the G1 Score; raw sleeve averages are compressed ~10-80)
@@ -346,6 +353,11 @@
     return v;
   }
   function danelfinOf() { const o = {}; Object.values(D.books).forEach((rows) => rows.forEach((r) => { if (r.ai != null && !o[r.t]) o[r.t] = r; })); return o; }
+  function dfn3Of(t) { const b = danelfinOf()[t]; return (b && b.ai != null) ? b.ai : ((D.dfn3 && D.dfn3[t] != null) ? D.dfn3[t] : null); }
+  function agree3mPair(gPct, ai) {
+    if (gPct == null || ai == null) return null;
+    return (gPct >= 0.5) === (ai >= 6);
+  }
   function rowsForView() {
     if (state.view === "SP") return Object.keys(D.tmeta).filter((t) => D.tmeta[t][3] === 1).map((t) => ({ t }));
     if (state.view === "TOP") return D.finalists.map((t) => ({ t }));
@@ -376,9 +388,37 @@
     const v = sc.fstrat, c = v >= 3 ? "dp-pos" : v <= -3 ? "dp-neg" : "dp-mid";
     return `<span class="dpill ${c}" title="Business dossier overlay f_strat (−10…+10). Includes unvalidated analyst-style judgment from a web search; never added into the G1 Score.">Dossier ${v > 0 ? "+" : ""}${v}</span>`;
   }
-  function g1Cell(sc) {
+  function hzStrip(sc, t) {
+    const unval = !!(M.v42_3m && M.v42_3m.unvalidated);
+    const winner = (M.v42_3m && M.v42_3m.winner) || "V42";
+    const tWin = M.v42_3m ? M.v42_3m.t_winner : null;
+    return `<div class="hzstrip">${HZ_STRIP.map((h) => {
+      if (h === 3) {
+        const b = sc.bands && sc.bands[3];
+        const g = b && b.hit != null && isFinite(b.hit) ? Math.round(100 * b.hit) : "–";
+        const df = P.danelfin ? dfn3Of(t) : null;
+        const dfShow = !P.danelfin ? null : (df == null ? "n/a" : df);
+        const tipG = g === "–"
+          ? "G1 3m: no 3-month calibration for this model (price-only names show –)."
+          : `G1 3m: historical odds of beating SPY over 3 months for similar-${winner} names` + (unval ? ` (unvalidated: rank IC t ≈ ${tWin != null ? tWin.toFixed(2) : "?"} < 2; shown for comparison, not a validated edge)` : "") + ".";
+        const tipD = df == null ? "No Danelfin data" : "Danelfin AI Score (their 3-month view, 1–10), from the uploaded portfolio CSV.";
+        return `<div class="hzmini hz3${unval && g !== "–" ? " unval" : ""}">
+          <div class="lbl">3m</div>
+          <div class="hz3pair">
+            <span title="${esc(tipG)}"><span class="sub">G1</span><span class="n" style="background:${g === "–" ? "transparent" : g1Color(g)}">${g}</span>${unval && g !== "–" ? '<sup class="uv" title="Unvalidated: 3-month rank IC t is below 2.">*</sup>' : ""}</span>
+            ${dfShow == null ? "" : `<span title="${esc(tipD)}"><span class="sub">DF</span><span class="n dfn">${dfShow}</span></span>`}
+          </div>
+        </div>`;
+      }
+      const b = sc.bands && sc.bands[h], br = M.base_rate && M.base_rate[h];
+      const n = b && b.hit != null && isFinite(b.hit) ? Math.round(100 * b.hit) : "–";
+      const tip = n === "–" ? `G1 ${HZ_LBL(h)}: no calibration` : `G1 ${HZ_LBL(h)}: historical odds of beating SPY for similar-score stocks (usual ${pct(br)}). 0–100 scale.`;
+      return `<div class="hzmini" title="${esc(tip)}"><div class="lbl">${HZ_LBL(h)}</div><div class="n" style="background:${n === "–" ? "transparent" : g1Color(n)}">${n}</div></div>`;
+    }).join("")}</div>`;
+  }
+  function g1Cell(sc, t) {
     const tip = sc.kind === "price" ? "Price-only score (no SEC fundamentals): momentum, drawdown and tail risk" : M.live === "V42" ? "G1 Quant Score (v4.2, passed its pre-registered test): percentile among the top 1,000 US stocks" : "G1 composite percentile (validated live score)";
-    return `<div class="scorecell"><span class="g1" style="background:${g1Color(sc.g1)}" title="${esc(tip)}">${Math.round(sc.g1)}</span>${sc.kind === "price" ? '<span class="tiny muted">price-only</span>' : ""}${dossPill(sc)}</div>`;
+    return `<div class="scorecell"><span class="g1" style="background:${g1Color(sc.g1)}" title="${esc(tip)}">${Math.round(sc.g1)}</span>${sc.kind === "price" ? '<span class="tiny muted">price-only</span>' : ""}${dossPill(sc)}${hzStrip(sc, t)}</div>`;
   }
   function oddsCell(e) {
     const k = e.kl, ed = k.p - k.base;
@@ -444,7 +484,7 @@
   }
   function detailHtml(e, r) {
     const sc = e.sc, dan = danelfinOf()[e.t];
-    const strip = HZ.map((h) => { const b = sc.bands[h], br = M.base_rate[h]; return `<div class="hzbox" title="${h}-month chance to beat the S&amp;P 500 (usual ${pct(br)})"><div class="muted tiny">${h < 12 ? h + "m" : h / 12 + "y"}</div><div class="ch ${b.hit - br >= 0.03 ? "pos" : b.hit - br <= -0.03 ? "neg" : ""}">${pct(b.hit)}</div></div>`; }).join("");
+    const strip = hzStrip(sc, e.t);
     const { good, bad } = strengthsFlags(e);
     const dsub = P.danelfin && dan ? `<div class="small">Danelfin (uploaded CSV): AI ${dan.ai ?? "–"} · Fundamental ${dan.fund ?? "–"} · Technical ${dan.tech ?? "–"} · Sentiment ${dan.sent ?? "–"} · Low Risk ${dan.lowrisk ?? "–"} ${agreePill(agree(sc.pct, dan.ai))}</div>` : "";
     const sty = e.sty ? `<div class="dgrid small"><div><b>Buffett &amp; Munger ${e.sty.bm.toFixed(1)}/10</b>${sc.v42?.gated ? ' <span class="muted">(below 4: G1 Score capped at 65)</span>' : ""}<ul>${Object.entries(e.sty.bm_st).map(([k, v]) => `<li>${esc(BM_LBL[k])}: <b>${v}</b>/${BM_MAX[k]}</li>`).join("")}</ul></div>
@@ -502,16 +542,29 @@
     const val = (r) => { const e = r.e; if (!e) return -1; switch (state.sortKey) { case "t": return r.t; case "vd": return VORDER.findIndex((x) => e.vd.base === x) * 1000 + e.sc.g1; case "ud": return e.sc.Up; case "odds": return e.kl.p; case "kelly": return e.kl.k; default: return e.sc.g1; } };
     rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * state.sortDir; });
     const th = (k, l, tip) => `<th data-k="${k}" title="${esc(tip || "")}">${l}${state.sortKey === k ? (state.sortDir < 0 ? " ▾" : " ▴") : ""}</th>`;
-    let html = `<table class="main"><thead><tr>${th("t", "Stock")}${th("vd", "Verdict", "Action verdict: a simple rule combining the business score with the price trend. Model estimate, not advice.")}${th("score", "G1 Score", "0–100 validated quant score (percentile among the top 1,000 US stocks). The Dossier pill is a separate, unvalidated overlay.")}${th("ud", "Upside · Safety", "Descriptive 0–100 axes used by the verdict rules")}${th("odds", "1-yr odds · $ range", "Chance to beat the S&P 500 over 12 months vs the usual rate, and Bear · Base · Bull price")}${th("kelly", "Size", "Conviction size: edge over the usual odds ÷ downside volatility. Halved while waiting for trend or before earnings.")}${isRes ? "<th></th>" : ""}</tr></thead><tbody>`;
+    let html = `<table class="main"><thead><tr>${th("t", "Stock")}${th("vd", "Verdict", "Action verdict: a simple rule combining the business score with the price trend. Model estimate, not advice.")}${th("score", "G1 Score", "0–100 validated quant score (percentile among the top 1,000 US stocks). The Dossier pill is a separate, unvalidated overlay. The horizon strip under the score is G1 historical odds of beating SPY (0–100) at 3m–5y; 3m also shows Danelfin AI (1–10) when available.")}${th("ud", "Upside · Safety", "Descriptive 0–100 axes used by the verdict rules")}${th("odds", "1-yr odds · $ range", "Chance to beat the S&P 500 over 12 months vs the usual rate, and Bear · Base · Bull price")}${th("kelly", "Size", "Conviction size: edge over the usual odds ÷ downside volatility. Halved while waiting for trend or before earnings.")}${isRes ? "<th></th>" : ""}</tr></thead><tbody>`;
     for (const r of rows) {
       const e = r.e, open = state.open.has(r.t);
       if (!e) { html += `<tr data-x="${esc(r.t)}"><td data-l="Stock"><b>${esc(r.t)}</b></td><td colspan="5" class="muted">Not in the bundled universe. Look it up above for a live price-only read.</td>${isRes ? `<td><button class="ghost" data-unpin="${esc(r.t)}">Remove</button></td>` : ""}</tr>`; continue; }
-      html += `<tr class="${open ? "open" : ""}" data-x="${esc(r.t)}"><td data-l="Stock">${stockCell(e, r, dan)}</td><td data-l="Verdict">${verdictPill(e.vd)}</td><td data-l="G1 Score">${g1Cell(e.sc)}</td><td data-l="Upside · Safety">${udBars(e.sc)}</td><td data-l="1-yr odds">${oddsCell(e)}</td><td data-l="Size">${sizeCell(e)}</td>${isRes ? `<td><button class="ghost" data-unpin="${esc(r.t)}">Remove</button></td>` : ""}</tr>`;
+      html += `<tr class="${open ? "open" : ""}" data-x="${esc(r.t)}"><td data-l="Stock">${stockCell(e, r, dan)}</td><td data-l="Verdict">${verdictPill(e.vd)}</td><td data-l="G1 Score">${g1Cell(e.sc, e.t)}</td><td data-l="Upside · Safety">${udBars(e.sc)}</td><td data-l="1-yr odds">${oddsCell(e)}</td><td data-l="Size">${sizeCell(e)}</td>${isRes ? `<td><button class="ghost" data-unpin="${esc(r.t)}">Remove</button></td>` : ""}</tr>`;
       if (open) html += `<tr class="det"><td colspan="${6 + (isRes ? 1 : 0)}">${detailHtml(e, r)}</td></tr>`;
     }
     html += "</tbody></table>";
     if (!rows.length) html = `<div class="card muted">${isRes ? "Nothing pinned yet. Look up a ticker above and press Pin to Watchlist." : "No rows."}</div>`;
-    $("tbl").innerHTML = html;
+    const uv = M.v42_3m && M.v42_3m.unvalidated;
+    const legend = `<p class="hzleg small">Horizons: G1 6m–5y are historical odds of beating SPY (0–100) for similar-score stocks. G1 3m is the ${(M.v42_3m && M.v42_3m.winner) || "V42"} 3-month odds (0–100)${uv ? ", marked unvalidated (t &lt; 2)" : ""}. ${P.danelfin ? "DF 3m is Danelfin’s AI Score (1–10, their 3-month view); n/a if no data. " : ""}Model estimates, not advice.</p>`;
+    let agreeLine = "";
+    if (P.danelfin) {
+      let n = 0, ag = 0;
+      for (const r of rows) {
+        const e = r.e, b = e && e.sc && e.sc.bands && e.sc.bands[3];
+        if (!b || b.pct == null) continue;
+        const df = dfn3Of(r.t); if (df == null) continue;
+        n++; if (agree3mPair(b.pct, df)) ag++;
+      }
+      if (n) agreeLine = `<p class="hzagr small">G1 3m and Danelfin 3m agreed on ${ag}/${n} names (${Math.round(100 * ag / n)}%) in this list (same half: G1 ≥ 50th percentile, Danelfin ≥ 6).</p>`;
+    }
+    $("tbl").innerHTML = legend + agreeLine + html;
     const cnt = {}; rows.forEach((r) => { if (r.e) cnt[r.e.vd.base] = (cnt[r.e.vd.base] || 0) + 1; });
     $("count").innerHTML = `${rows.length} stocks · ` + VORDER.slice().reverse().filter((v) => cnt[v]).map((v) => `<span class="vd ${VCLS[v]} mini">${esc(v.replace(/ \(.*/, ""))} ${cnt[v]}</span>`).join(" ") + ` <span class="tiny muted">· tap a row for details</span>`;
     renderHealth();
@@ -521,7 +574,9 @@
     const v = M.v42, ps = M.v42_pass, f = (x) => `${x.ic.toFixed(3)} <span class="muted">(t≈${x.t.toFixed(1)})</span>`;
     const rowsOf = (lab) => HZ.map((h) => { const r = v[h][lab]; return `<tr><td>${h}m</td>${["V42", "A"].map((m) => `<td>${f(r[m])}<br><span class="tiny muted">top-decile p10 ${sgn(r[m].p10)} · top−bottom ${sgn(r[m].tmb)}</span></td>`).join("")}</tr>`; }).join("");
     const head = `<tr><th>Horizon</th><th>G1 v4.2</th><th>v2 composite A</th></tr>`;
-    $("bt").innerHTML = `<p class="small">Pre-registered test (docs/PREREGISTRATION_V4_2.md, committed before any result): top 1,000 US stocks, month-ends from 2014, no fitted parameters. v4.2 = equal blend of Buffett &amp; Munger, lean Magic 15, cyclically-adjusted value (5-year median EBIT/EV and FCF/EV, within sector) and trend &amp; defense (12-1 month momentum within sector, low downside beta), capped at the 65th percentile when Buffett &amp; Munger is below 4. Result: <b>${ps.PASS ? "PASS: v4.2 is the live G1 Score" : "FAIL: composite A stays live"}</b> (rank IC beats A at ${ps.ic_wins}/6 horizons; turnover with a 15%/35% hold buffer ${M.v42_turnover.hyst.V42.toFixed(3)} vs ${M.v42_turnover.hyst.A.toFixed(3)} a month, ratio ${ps.turnover_ratio.toFixed(2)} ≤ 1.2).</p>
+    const m3 = M.v42_3m;
+    const line3 = m3 ? `<p class="small">3-month add-on (docs/PREREGISTRATION_V4_2_3M.md, committed before any 3m result): V42 rank IC ${m3.ic_V42.toFixed(3)} (t≈${m3.t_winner.toFixed(2)}) vs A ${m3.ic_A.toFixed(3)} (t≈${m3.primary.A.t.toFixed(2)}). Winner for the 3m G1 cell: <b>${m3.winner}</b>${m3.unvalidated ? " (unvalidated: t &lt; 2; the cell is marked and does not change the live headline score)" : ""}.</p>` : "";
+    $("bt").innerHTML = `<p class="small">Pre-registered test (docs/PREREGISTRATION_V4_2.md, committed before any result): top 1,000 US stocks, month-ends from 2014, no fitted parameters. v4.2 = equal blend of Buffett &amp; Munger, lean Magic 15, cyclically-adjusted value (5-year median EBIT/EV and FCF/EV, within sector) and trend &amp; defense (12-1 month momentum within sector, low downside beta), capped at the 65th percentile when Buffett &amp; Munger is below 4. Result: <b>${ps.PASS ? "PASS: v4.2 is the live G1 Score" : "FAIL: composite A stays live"}</b> (rank IC beats A at ${ps.ic_wins}/6 horizons; turnover with a 15%/35% hold buffer ${M.v42_turnover.hyst.V42.toFixed(3)} vs ${M.v42_turnover.hyst.A.toFixed(3)} a month, ratio ${ps.turnover_ratio.toFixed(2)} ≤ 1.2).</p>${line3}
       <p class="small"><b>Caveat:</b> v4.2 ranks the whole list better and its top decile has milder bad outcomes, but its top-minus-bottom decile spread is much smaller than the composite's. Read the score as a broad ranking plus downside filter rather than a "buy only the top 10%" signal.</p>
       <div class="tblwrap"><table>${head}${rowsOf("primary")}</table></div>
       <details><summary class="small">Same test without the haircut and turnover drag</summary><div class="tblwrap"><table>${head}${rowsOf("raw")}</table></div></details>
@@ -537,7 +592,7 @@
       const dan = danelfinOf()[t];
       out.innerHTML = `<div class="card report"><div class="rhead"><div><span class="rt">${esc(t)}</span> <span class="muted">${esc(e.m.name || "")}</span><div class="small"><b class="txt">${usd(e.f.px)}</b> <span class="muted">${esc(note || "")}</span></div></div>
         <div class="row"><button id="pinBtn">${pinned ? "Pinned ✓" : "☆ Pin to Watchlist"}</button><button class="ghost" id="closeRep" title="Close">✕</button></div></div>
-        <div class="rgrid"><div class="kv"><div class="tiny muted">G1 Score</div>${g1Cell(e.sc)}</div><div class="kv"><div class="tiny muted">Verdict</div>${verdictPill(e.vd)}</div><div class="kv"><div class="tiny muted">Upside · Safety</div>${udBars(e.sc)}</div>
+        <div class="rgrid"><div class="kv"><div class="tiny muted">G1 Score</div>${g1Cell(e.sc, t)}</div><div class="kv"><div class="tiny muted">Verdict</div>${verdictPill(e.vd)}</div><div class="kv"><div class="tiny muted">Upside · Safety</div>${udBars(e.sc)}</div>
         <div class="kv"><div class="tiny muted">1-yr odds · $ range</div>${oddsCell(e)}</div><div class="kv"><div class="tiny muted">Size</div>${sizeCell(e)}</div>${P.danelfin && dan ? `<div class="kv"><div class="tiny muted">Danelfin</div><b>${dan.ai ?? "–"}</b> ${agreePill(agree(e.sc.pct, dan.ai))}</div>` : ""}</div>
         ${detailHtml(e, { t, entryUI: true })}</div>`;
       $("pinBtn").onclick = () => { if (!state.research.some((x) => x.t === t)) { state.research.push({ t, name: e.m.name || "", at: new Date().toISOString() }); saveResearch(); } $("pinBtn").textContent = "Pinned ✓"; if (state.view === "RES") renderTable(); };

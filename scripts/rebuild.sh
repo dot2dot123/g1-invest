@@ -21,6 +21,7 @@ fi
 "$PY" lean_test.py                                            # 5d. lean Magic 15 test
 "$PY" model_v4.py                                             # 5e. G1 v4 pre-registered test (S_quant vs A; failed, kept for the record)
 "$PY" model_v42.py                                            # 5f. G1 v4.2 pre-registered test (V42 vs A) -> oos_v42_*, model_v42_results.json (LIVE)
+"$PY" model_v42_3m.py                                         # 5g. G1 v4.2 3-month test (V42 vs A) -> oos_v42_3.parquet, model_v42_3m_results.json (strip only)
 "$PY" build_site.py                                           # 6. shared bundle + per-page data + dossiers (gitignored build/data/)
 "$PY" render.py                                               # 7. cleartext pages for every config/users.json page (gitignored build/clear/)
 "$ROOT/scripts/encrypt-pages.sh"                              # 8. StatiCrypt each page with its own password file + leak check

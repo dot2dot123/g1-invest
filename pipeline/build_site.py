@@ -310,6 +310,7 @@ def shared():
     res42 = {int(k) if k.isdigit() else k: v for k, v in json.load(open(CACHE / "model_v42_results.json")).items()}
     passed42 = bool(res42["pass"]["PASS"])
     live = "V42" if passed42 else ("S_quant" if passed else "A")
+    res42_3 = json.load(open(CACHE / "model_v42_3m_results.json"))
     # regime + market weather
     fred, spy = M4.load_macro()
     rg = M4.regime_at(now, fred, spy)
@@ -409,7 +410,10 @@ def shared():
         o = pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")
         cal[h] = {m: decile_table(o, m, f"yh{h}") for m in ("A", "S_quant", "S_price")}
         cal[h]["V42"] = decile_table(pd.read_parquet(CACHE / f"oos_v42_{h}.parquet"), "V42", f"yh{h}")
+    o3 = pd.read_parquet(CACHE / "oos_v42_3.parquet")
+    cal[3] = {m: decile_table(o3, m, "yh3") for m in ("V42", "A")}
     base_rate = {h: float((pd.read_parquet(CACHE / f"oos_v42_{h}.parquet")[f"yh{h}"] > 0).mean()) for h in HORIZONS}
+    base_rate[3] = float((o3["yh3"] > 0).mean())
     # finalists: top 30 by the live quant score among the current universe (fundamentals required)
     fin30 = sorted(univ, key=lambda t: (-sc[t][live], t))[:30]
     style_bt = {}
@@ -417,7 +421,7 @@ def shared():
         ln = json.load(open(CACHE / "lean_test_results.json"))
         style_bt = {lab: {h: {"ic": ln[str(h)]["wide"][k]["ic"], "t": ln[str(h)]["wide"][k]["t"]} for h in HORIZONS} for lab, k in (("BM", "BM"), ("M15", "L15"))}
     except Exception: pass
-    meta = {"built": dt.datetime.now(LA).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()), "horizons": HORIZONS,
+    meta = {"built": dt.datetime.now(LA).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()), "horizons": HORIZONS, "hz_strip": [3, 6, 12, 24, 36, 48, 60],
             "cols": COLS, "price_dep": PRICE_DEP, "sectors": SECTORS, "live": live, "passed": passed,
             "v4": {str(h): {lab: {m: {k: res4[h][lab][m][k] for k in ("ic", "t", "p10", "tmb")} for m in M4.MODELS} for lab in ("haircut_drag", "raw")} for h in HORIZONS},
             "v4_pass": res4["pass"], "turnover": res4["turnover"],
@@ -427,6 +431,10 @@ def shared():
             "base_rate": base_rate, "tsy": M["tsy"], "v42q": v42q, "v42_pass": res42["pass"],
             "v42": {str(h): {lab: {m: {k: res42[h][lab][m][k] for k in ("ic", "t", "p10", "tmb")} for m in ("V42", "A")} for lab in ("primary", "raw")} for h in HORIZONS},
             "v42_turnover": {"hyst": res42["turnover_hyst"], "topdec": res42["turnover_topdec"]},
+            "v42_3m": {"winner": res42_3["winner"], "unvalidated": bool(res42_3["unvalidated"]),
+                       "t_winner": res42_3["t_winner"], "ic_V42": res42_3["ic_V42"], "ic_A": res42_3["ic_A"],
+                       "primary": {m: {k: res42_3["primary"][m][k] for k in ("ic", "t", "p10", "tmb")} for m in ("V42", "A")},
+                       "turnover_hyst": res42_3["turnover_hyst"]},
             "magic": {"name": "Magic 15", "sub": "lean: quality compounders + downside protection", "pillars": {k: [[a, b] for a, b in ST.MAGIC[k]] for k in ST.LEAN},
                       "labels": ST.MAGIC_LABEL, "left_out": ST.LEFT_OUT},
             "style_bt": style_bt,
@@ -443,6 +451,12 @@ def page(cfg, S, dossiers):
     dan = bool(cfg.get("danelfin"))
     books = {label: read_book(path, dan) for label, path in cfg["books"].items()}
     mine = sorted({r["t"] for rows in books.values() for r in rows})
+    if dan:
+        missing = sorted({r["t"] for rows in books.values() for r in rows if r.get("ai") is None})
+        # API only for book holdings still missing a score, cap 100, stop on quota/upgrade. Holdings already have CSV scores: 0 calls.
+        print("danelfin 3m: holdings", len(mine), "missing AI", len(missing), "API calls 0")
+        if missing:
+            print("danelfin 3m: missing scores left as n/a (no API fill this run)")
     today = pd.Timestamp.today().normalize()
     keys = S["meta"]["spy_w"]["keys"][-53:]
     w53 = {}
