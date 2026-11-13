@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Encrypt the cleartext pages in build/clear/ with StatiCrypt for GitHub Pages.
-# Password is read from the box secrets file (never hardcoded, never printed).
+# Encrypt every configured page (config/users.json) from build/clear/ with StatiCrypt, each with its own password file.
+# Passwords are read from files (never hardcoded, never printed). Usage: scripts/encrypt-pages.sh [SLUG]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-PASS_FILE="${G1_DASHBOARD_PASSWORD_FILE:-/home/box/agent-data/secrets/danelfin-dashboard-password}"
-[[ -f "$PASS_FILE" ]] || { echo "Missing password file" >&2; exit 1; }
-PASSWORD="$(tr -d '\r\n' < "$PASS_FILE")"
-[[ -n "$PASSWORD" ]] || { echo "Password file is empty" >&2; exit 1; }
-[[ -f build/clear/index.html && -f build/clear/otw/index.html ]] || { echo "Run pipeline/render.py first" >&2; exit 1; }
+PY="${PYTHON:-$ROOT/.venv/bin/python}"
+ONLY="${1:-}"
 if [[ ! -f .staticrypt.json ]]; then
   SALT="$(node -e "console.log(require('crypto').randomBytes(16).toString('hex'))")"
   printf '{\n  "options": {\n    "salt": "%s"\n  }\n}\n' "$SALT" > .staticrypt.json
 fi
-export STATICRYPT_PASSWORD="$PASSWORD"
 encrypt_one() {
   local clear_html="$1" dest_html="$2" tmp produced
   tmp="$(mktemp -d)"
@@ -27,11 +23,20 @@ encrypt_one() {
   mkdir -p "$(dirname "$dest_html")"; cp "$produced" "$dest_html"; rm -rf "$tmp"
   echo "encrypted -> ${dest_html#$ROOT/}"
 }
-encrypt_one build/clear/index.html "$ROOT/index.html"
-encrypt_one build/clear/otw/index.html "$ROOT/otw/index.html"
-unset STATICRYPT_PASSWORD PASSWORD
-# Leak guard: published files must not contain cleartext model data or tickers' scores.
-for f in index.html otw/index.html; do
-  if grep -q -E 'g1data|"tick":|"models":|OTW_holdings' "$f"; then echo "LEAK CHECK FAILED in $f" >&2; exit 1; fi
-done
-echo "Leak check passed."
+n=0
+while IFS='|' read -r slug out pass_file; do
+  [[ -z "$ONLY" || "$ONLY" == "$slug" ]] || continue
+  [[ -f "$pass_file" ]] || { echo "Missing password file for page $slug" >&2; exit 1; }
+  PASSWORD="$(tr -d '\r\n' < "$pass_file")"
+  [[ -n "$PASSWORD" ]] || { echo "Password file is empty for page $slug" >&2; exit 1; }
+  clear="build/clear/${out}index.html"; dest="$ROOT/${out}index.html"
+  [[ -f "$clear" ]] || { echo "Run pipeline/render.py first ($clear missing)" >&2; exit 1; }
+  export STATICRYPT_PASSWORD="$PASSWORD"
+  encrypt_one "$clear" "$dest"
+  unset STATICRYPT_PASSWORD PASSWORD
+  # Leak guard: the published file must not contain cleartext page data.
+  if grep -q -E 'g1data|"rows":|"tmeta":|"books":|"tick":|"models":|OTW_holdings' "$dest"; then echo "LEAK CHECK FAILED in ${out}index.html" >&2; exit 1; fi
+  n=$((n+1))
+done < <(cd pipeline && "$PY" -c 'from build_site import load_config
+for p in load_config(): print(p["slug"], p["output_path"], p["password_file"], sep="|")')
+echo "Leak check passed ($n page(s))."

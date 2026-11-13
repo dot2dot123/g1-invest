@@ -1,0 +1,25 @@
+{
+  "_doc": "Copy to config/users.json (gitignored) and edit. Paths only: never put a password, holdings or tickers in this file. Each page is built and encrypted on its own (scripts/deploy_user.sh <slug>). Book CSVs: a 'Ticker' column, or headerless 'Ticker' / 'Ticker,Shares' / 'Ticker,Shares,Cost' rows. 'danelfin': true only for the owner's pages (Danelfin columns are stripped otherwise).",
+  "pages": [
+    {
+      "slug": "gary",
+      "output_path": "",
+      "title": "G1 · Gary A",
+      "h1": "G1 · multi-horizon stock predictor",
+      "password_file": "/home/box/agent-data/secrets/<password-file>",
+      "danelfin": true,
+      "show_sp500": true,
+      "books": {"OTW": "/path/to/OTW_holdings.csv", "OTW #2": "/path/to/OTW2_holdings.csv"}
+    },
+    {
+      "slug": "friend-example",
+      "output_path": "u/friend-example/",
+      "title": "G1 · Friend",
+      "h1": "G1 · stock checker",
+      "password_file": "/home/box/agent-data/secrets/g1-friend-example-password",
+      "danelfin": false,
+      "show_sp500": true,
+      "books": {"Portfolio": "/path/to/friend_portfolio.csv"}
+    }
+  ]
+}

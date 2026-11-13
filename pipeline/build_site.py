@@ -1,20 +1,50 @@
-"""Score the current universe and write cleartext page data (gitignored) for the two dashboards."""
-import json, math, datetime as dt
+"""G1 v4 page data. Writes gitignored cleartext JSON to build/data/: one shared bundle (any-ticker lookup data,
+models, regime, dossier pool) and one isolated file per configured page (config/users.json).
+
+  python build_site.py               full: shared bundle + every page
+  python build_site.py --site-only   reuse build/data/shared.json, rebuild page files only (fast)
+  python build_site.py --page SLUG   restrict page files to one slug (combine with --site-only for a <5 s user build)
+
+Isolation: a page file only holds its own books, its own dossiers/earnings/weekly prices for those books, and Danelfin
+fields only when that page has "danelfin": true. Definitions: docs/PREREGISTRATION_V4.md."""
+import json, math, sys, datetime as dt
 from zoneinfo import ZoneInfo
 import numpy as np, pandas as pd
 from common import *
-import model as M
 import model_v2 as M2
+import model_v4 as M4
 import style as ST
 
 PCT = np.linspace(0, 1, 101)
-FUND_STATIC = ["roe", "roic", "gm", "om", "om_stab", "om_trend", "rev_g1", "rev_g3", "rev_accel", "sue", "lev", "intcov",
-               "dil_1y", "dil_3y", "accruals"]
-BOOK_LABEL = {"OTW": "OTW", "OTW2": "OTW #2", "SWB": "SWB", "Jette": "Jette", "NEW": "NEW"}
+OUT = ROOT / "build" / "data"
+LA = ZoneInfo("America/Los_Angeles")
+SECTORS = ["Communication", "Discretionary", "Energy", "Financials", "Health", "Industrials", "Materials", "Other",
+           "RealEstate", "Staples", "Tech", "Utilities"]
+# Columns shipped per ticker (compact columnar rows). Price-dependent ones are recomputed in the browser on Refresh.
+COLS = ["px", "mcap", "roic_5y_med", "inc_roic_3y", "fcf_conv", "gpa", "accruals", "dil_3y", "dil_1y", "roe", "roa", "roe_stab",
+        "eq_assets", "bm", "fcfy", "ey", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "om_trend", "sue", "rev_accel", "inc_gm",
+        "rule_of_40", "def_rev_g1", "rd_roi", "post_filing_drift", "mom_12_1", "mom_6_1", "dd_52w", "vcp_ratio", "up_down_vol_50d",
+        "lev", "intcov", "beta_down", "cvar_5", "f_score", "sma40_below", "sigma_down", "rev_1m", "trend40", "vol_1y", "beta_2y",
+        "mdd_3y", "roic", "om_stab", "gm", "rev_g1", "rev_g3",
+        # raw for live re-pricing
+        "ebit", "cfo", "capex", "equity", "debt", "cash", "non_op", "shares_adj", "ey_hist_med", "fcfy_hist_med",
+        # style history, stops
+        "roe_med5", "roe_min5", "roa_min5", "sma40c", "ema10c"]
+PRICE_DEP = ["ey", "fcfy", "bm", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "mcap"]
+
+def nz(v):
+    try: f = float(v)
+    except Exception: return None
+    return None if (math.isnan(f) or math.isinf(f)) else f
+
+def rnd(v, sig=6):
+    v = nz(v)
+    if v is None or v == 0: return v
+    return float(f"{v:.{sig}g}")
 
 def qpct(x, q):
     """Percentile of x within shipped quantiles q (101 points). Mirrors qpct() in app.js exactly."""
-    if x is None or (isinstance(x, float) and math.isnan(x)): return None
+    if x is None or q is None: return None
     n = len(q)
     if x < q[0]: return 0.0
     if x > q[-1]: return 1.0
@@ -23,209 +53,321 @@ def qpct(x, q):
     a, b = hi, lo
     return (a + (x - q[a]) / (q[b] - q[a])) / (n - 1)
 
-def nz(v):
-    if v is None: return None
-    try:
-        f = float(v)
-    except Exception: return None
-    return None if (math.isnan(f) or math.isinf(f)) else f
+def quant(s):
+    s = pd.to_numeric(s, errors="coerce").astype(float).dropna()
+    return [rnd(x, 8) for x in np.quantile(s, PCT)] if len(s) >= 5 else None
 
-def decile_table(oos):
-    o = oos.copy()
-    o["r"] = o.groupby("date").p.rank(pct=True)
-    o["dec"] = np.clip((o.r * 10).apply(math.ceil) - 1, 0, 9)
+def interp(x, xs, ys):
+    """Mirrors interp() in app.js."""
+    if x <= xs[0]: return ys[0]
+    if x >= xs[-1]: return ys[-1]
+    for i in range(1, len(xs)):
+        if x <= xs[i]:
+            t = (x - xs[i - 1]) / (xs[i] - xs[i - 1]); return ys[i - 1] + t * (ys[i] - ys[i - 1])
+    return ys[-1]
+
+def decile_table(df, col, y):
+    o = df[["date", col, y]].dropna().copy()
+    o["r"] = o.groupby("date")[col].rank(pct=True)
+    o["dec"] = np.clip(np.ceil(o.r * 10) - 1, 0, 9)
+    return [{"mid": (d + 0.5) / 10, "hit": float((g[y] > 0).mean()), "p10": float(g[y].quantile(.1)), "p50": float(g[y].median()),
+             "p90": float(g[y].quantile(.9)), "n": int(len(g))} for d, g in o.groupby("dec")]
+
+# ---------------- python mirror of the browser score (app.js scoreTicker) ----------------
+def live_scores(f, sector, fin, M):
+    """f: dict of shipped features. Returns A, sleeves, U, D, S_quant (current regime), S_price. Mirrors app.js."""
+    sq = M["sq"].get(sector) or {}; sqA = M["sqA"].get(sector) or {}; uq = M["uq"]; fq = M["fq"]
+    def r(name, q): return qpct(f.get(name), q) if q else None
+    def sg(v, s): return 0.5 if v is None else (v if s > 0 else 1 - v)
+    def mean(xs): return fsum_js(xs) / len(xs)
+    g = dict(f)
+    eyh = g.get("ey_vs_hist"); omt = g.get("om_trend")
+    g["gated_ey_vs_hist"] = None if eyh is None else eyh * (1.0 if (omt is not None and omt >= 0) else 0.0)
+    if fin:
+        for k in M4.FIN_MASK: g[k] = None
+    rs = lambda name: qpct(g.get(name), sq.get(name)) if sq.get(name) else None
+    ru = lambda name: qpct(g.get(name), uq.get(name)) if uq.get(name) else None
+    rf = lambda name: qpct(g.get(name), fq.get(name)) if fq.get(name) else None
+    o = {}
+    o["S1"] = mean([sg(rf(k), s) for k, s in M4.S1_FIN]) if fin else mean([sg(rs(k), s) for k, s in M4.S1])
+    o["S2"] = mean([sg(rs(k), s) for k, s in M4.S2])
+    o["S3"] = mean([sg(rs(k), s) for k, s in M4.S3])
+    o["S4"] = mean([0.5 * sg(ru(k), s) + 0.5 * sg(rs(k), s) for k, s in M4.S4]) * M["smult"].get(sector, 1.0)
+    f4 = 0.05 * (g.get("form4") or 0.0)
+    o["S5"] = (mean([sg(rf(k), s) for k, s in M4.S5_FIN]) if fin else mean([sg(ru(k), s) for k, s in M4.S5])) + f4
+    o["U"] = 100 * (0.35 * o["S3"] + 0.35 * o["S4"] + 0.30 * (o["S1"] + o["S2"]) / 2)
+    o["D"] = 100 * (0.50 * o["S5"] + 0.30 * o["S1"] + 0.20 * o["S2"])
+    w = M4.REGIME_W[M["regime"]]
+    o["S_quant"] = w * o["U"] + (1 - w) * o["D"]
+    sp = mean([sg(ru(k), s) for k, s in M4.SPRICE]) - 0.15 * (g.get("sma40_below") or 0.0)
+    o["S_price"] = 100 * min(1.0, max(0.0, sp))
+    # v2 composite A (within-sector, centred ranks; missing -> 0)
+    pv = []
+    for comps in M2.PILLARS.values():
+        pv.append(fsum_js(s * ((qpct(f.get(n), sqA.get(n)) - 0.5) if (sqA.get(n) and f.get(n) is not None) else 0.0) for n, s in comps) / len(comps))
+    o["A"] = fsum_js(pv) / len(pv)
+    return o
+
+def fsum_js(xs):
+    """Left-to-right float sum like JS reduce (Python >= 3.12 sum() uses compensated summation, which differs in the last bits)."""
+    acc = 0.0
+    for x in xs: acc += x
+    return acc
+
+def calib(score, pq, cal):
+    s = qpct(score, pq); mids = [c["mid"] for c in cal]
+    out = {"pct": s}
+    for k in ("hit", "p10", "p50", "p90"): out[k] = interp(s, mids, [c[k] for c in cal])
+    return out
+
+# ---------------- helpers for weekly/stops/earnings ----------------
+def weekly_close(t):
+    f = PRICES / f"{t}.parquet"
+    if not f.exists(): return None
+    d = pd.read_parquet(f)
+    d = d[d.close > 0]
+    return d[["adj", "close"]].resample("W-FRI").last().dropna()
+
+def ema(xs, n=10):
+    a = 2 / (n + 1); e = xs[0]
+    for x in xs[1:]: e = a * x + (1 - a) * e
+    return e
+
+_EARN = None
+def next_earnings(t, today):
+    """Earliest (last 4 quarterly SEC filing dates + 364 days) that is >= today (pre-registered estimate).
+    Cached per ticker in cache/earn_cache.json for the same day so single-page builds stay fast."""
+    global _EARN
+    f = CACHE / "earn_cache.json"
+    if _EARN is None:
+        _EARN = json.load(open(f)) if f.exists() else {}
+    key = f"{t}|{today.date()}"
+    if key in _EARN: return _EARN[key]
+    v = _next_earnings(t, today)
+    _EARN[key] = v
+    try: json.dump(_EARN, open(f, "w"))
+    except Exception: pass
+    return v
+
+def _next_earnings(t, today):
+    try:
+        from fundamentals import load_ticker
+        F = load_ticker(t)
+        fq = F.get("filed_q") if F else None
+        if fq is None or not len(fq): return None
+        c = sorted(pd.Timestamp(x) + pd.Timedelta(days=364) for x in fq[-4:])
+        c = [x for x in c if x >= today]
+        return str(c[0].date()) if c else None
+    except Exception:
+        return None
+
+def load_config():
+    f = ROOT / "config" / "users.json"
+    if not f.exists(): raise SystemExit("Missing config/users.json. Copy config/users.example.json and edit (see docs/REBUILD_GUIDE.md).")
+    return json.load(open(f))["pages"]
+
+def read_book(path, danelfin):
+    d = pd.read_csv(path)
+    cols = {c.lower().strip(): c for c in d.columns}
+    if "ticker" not in cols:  # headerless "Ticker" or "Ticker,Shares[,Cost]" file
+        d = pd.read_csv(path, header=None); d.columns = ["Ticker", "Shares", "Cost"][:d.shape[1]]
+        cols = {c.lower(): c for c in d.columns}
     rows = []
-    for d, g in o.groupby("dec"):
-        rows.append({"mid": (d + 0.5) / 10, "hit": float((g.y > 0).mean()), "p10": float(g.y.quantile(.1)),
-                     "p50": float(g.y.median()), "p90": float(g.y.quantile(.9)), "n": int(len(g))})
+    for _, r in d.iterrows():
+        t = str(r[cols["ticker"]]).strip().upper().replace("-", ".")
+        if not t or t == "NAN": continue
+        g = lambda k: nz(r[cols[k]]) if k in cols else None
+        row = {"t": t, "name": (str(r[cols["company"]]) if "company" in cols and isinstance(r[cols["company"]], str) else None),
+               "shares": g("shares"), "entry": g("purchase price") if "purchase price" in cols else g("cost")}
+        if danelfin:
+            row.update({"ai": g("ai score"), "fund": g("fundamental"), "tech": g("technical"), "sent": g("sentiment"), "lowrisk": g("low risk")})
+        rows.append(row)
     return rows
 
-def verdict(m):
-    ic, t, tmb = m["rank_ic"], m["rank_ic_t_overlap_adj"], m["tmb_share_positive"]
-    if ic > 0.03 and t > 1.5: return "some edge"
-    if ic > 0.02 and t > 0.8: return "weak, not significant"
-    if ic < -0.02: return "negative (worse than random)"
-    return "no edge"
+# ---------------- shared bundle ----------------
+def shared():
+    p2 = pd.read_parquet(CACHE / "panel_v2.parquet")
+    now = p2.date.max()
+    cur = p2[(p2.date == now) & p2.px_close.notna()].copy().set_index("ticker")
+    cur["form4"], f4_last = M4.form4_cluster(cur.reset_index())
+    U = cur[cur.univ].copy()
+    res4 = {int(k) if k.isdigit() else k: v for k, v in json.load(open(CACHE / "model_v4_results.json")).items()}
+    passed = bool(res4["pass"]["PASS"])
+    live = "S_quant" if passed else "A"
+    # regime + market weather
+    fred, spy = M4.load_macro()
+    rg = M4.regime_at(now, fred, spy)
+    breadth = float((U.sma40_below.dropna() == 0).mean())
+    # weekly breadth over 26 weeks for the current top-1000 (capitulation rule)
+    closes = {}
+    for t in U.index:
+        w = weekly_close(t)
+        if w is not None: closes[t] = w["adj"].iloc[-80:]
+    W = pd.DataFrame(closes).sort_index()
+    sma = W.rolling(40, min_periods=30).mean()
+    above = (W > sma).astype(float).where(sma.notna() & W.notna())
+    wb = (above.sum(axis=1) / above.notna().sum(axis=1).replace(0, np.nan)).dropna().iloc[-14:]
+    hy = fred["BAMLH0A0HYM2"].dropna()
+    cv = fred["T10Y2Y"].dropna()
+    spy_w = weekly_close("SPY")["adj"]
+    weather = {"hy": nz(hy.iloc[-1]), "hy_date": str(hy.index[-1].date()), "hy_peak13": nz(hy[hy.index > hy.index[-1] - pd.Timedelta(days=91)].max()),
+               "curve": nz(cv.iloc[-1]), "curve_date": str(cv.index[-1].date()), "breadth": breadth,
+               "breadth_min13": nz(wb.iloc[:-1].min()), "breadth_weekly_now": nz(wb.iloc[-1]),
+               "build_regime": rg["regime"], "spy": rg["spy"], "sma40": rg["sma40"], "spy_hi52": nz(spy_w.iloc[-52:].max()),
+               "form4_last": str(pd.Timestamp(f4_last).date()) if f4_last is not None else None}
+    # sector multipliers at build (S4)
+    sm = M4.sector_mult(U.reset_index().assign(date=now))
+    smult = {s: float(m) for s, m in zip(U.sector.values, sm)}
+    # masked copy for quantiles (financials override)
+    Uq = U.copy(); fin = M4.is_fin(Uq["sic"]); Uq["gated_ey_vs_hist"] = Uq.ey_vs_hist * (Uq.om_trend >= 0).astype(float)
+    for k in M4.FIN_MASK: Uq.loc[fin, k] = np.nan
+    sec_feats = sorted({f for f, _ in M4.S1 + M4.S2 + M4.S3 + M4.S4})
+    sq = {s_: {f: quant(g[f]) for f in sec_feats} for s_, g in Uq.groupby("sector")}          # v4 (financials masked)
+    sqA = {s_: {f: quant(g[f]) for f in M2.A_FEATS} for s_, g in U.groupby("sector")}         # v2 composite A (unmasked)
+    uq = {f: quant(Uq[f]) for f in sorted({f for f, _ in M4.S4 + M4.S5 + M4.SPRICE})}
+    fq = {f: quant(Uq.loc[fin, f]) for f in sorted({f for f, _ in M4.S1_FIN + M4.S5_FIN})}
+    mq = {f: quant(U[f]) for f in ST.MAGIC_FEATS}
+    # style history (B&M) for every ticker
+    ph = ST.add_hist(p2[p2.date >= now - pd.DateOffset(months=62)])
+    hist = ph[ph.date == now].set_index("ticker")[["roe_med5", "roe_min5", "roa_min5"]]
+    cur = cur.join(hist)
+    # raw fundamentals + stops
+    raw = json.load(open(CACHE / "latest_fundamentals_v2.json"))
+    names, by_cik = {}, {}
+    try:
+        for v in json.load(open(CACHE / "company_tickers.json")).values():
+            tk = v["ticker"].replace("-", "."); names.setdefault(tk, v["title"]); by_cik.setdefault(int(v["cik_str"]), []).append(tk)
+    except Exception: pass
+    spcur = json.load(open(CACHE / "sp500_current.json"))
+    rows, meta_t = {}, {}
+    for t, r in cur.iterrows():
+        rw = raw.get(t) or {}
+        w = weekly_close(t)
+        sma40c = ema10c = None
+        if w is not None and len(w) >= 30:
+            c = w["close"].values; sma40c = float(c[-40:].mean()); ema10c = float(ema(list(c[-260:])))
+        vals = {**{k: r.get(k) for k in COLS if k in r.index}, "px": r.px_close, "ey_hist_med": r.get("ey_hist_med"),
+                "fcfy_hist_med": r.get("fcfy_hist_med"), "non_op": rw.get("non_op"), "sma40c": sma40c, "ema10c": ema10c}
+        for k in ("ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj"): vals[k] = rw.get(k)
+        rows[t] = [rnd(vals.get(k)) for k in COLS]
+        has_fund = nz(rw.get("shares_adj")) is not None and any(nz(r.get(k)) is not None for k in ("ey", "fcfy", "roe"))
+        sp = spcur.get(t) or {}
+        meta_t[t] = [SECTORS.index(r.sector) if r.sector in SECTORS else SECTORS.index("Other"), 1 if has_fund else 0,
+                     1 if bool(M4.is_fin(pd.Series([r.get("sic")])).iloc[0]) else 0, 1 if t in spcur else 0, int(r.form4 or 0),
+                     1 if r.univ else 0, sp.get("name") or names.get(t) or ""]
+    # multi-class aliasing: other share classes of a shipped company -> its primary (most panel rows)
+    nrows = p2.groupby("ticker").size()
+    alias = {}
+    for c, tks in by_cik.items():
+        have = [t for t in tks if t in rows]
+        if not have: continue
+        prim = max(have, key=lambda t: nrows.get(t, 0))
+        for t in tks:
+            if t not in rows: alias[t] = prim
+    M = {"sq": sq, "sqA": sqA, "uq": uq, "fq": fq, "smult": smult, "regime": rg["regime"]}
+    # scores of the current universe from the shipped (rounded) values -> score quantiles
+    def feats(t): return dict(zip(COLS, rows[t])) | {"form4": meta_t[t][4]}
+    sc = {t: live_scores(feats(t), SECTORS[meta_t[t][0]], meta_t[t][2] == 1, M) for t in rows}
+    univ = [t for t in rows if meta_t[t][5] == 1 and meta_t[t][1] == 1]
+    pq = {m: [rnd(x, 12) for x in np.quantile([sc[t][m] for t in univ], PCT)] for m in ("A", "S_quant", "U", "D", "S_price")}
+    cal = {}
+    for h in HORIZONS:
+        o = pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")
+        cal[h] = {m: decile_table(o, m, f"yh{h}") for m in ("A", "S_quant", "S_price")}
+    base_rate = {h: float((pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")[f"yh{h}"] > 0).mean()) for h in HORIZONS}
+    # finalists: top 30 by the live quant score among the current universe (fundamentals required)
+    fin30 = sorted(univ, key=lambda t: -sc[t][live])[:30]
+    style_bt = {}
+    try:
+        ln = json.load(open(CACHE / "lean_test_results.json"))
+        style_bt = {lab: {h: {"ic": ln[str(h)]["wide"][k]["ic"], "t": ln[str(h)]["wide"][k]["t"]} for h in HORIZONS} for lab, k in (("BM", "BM"), ("M15", "L15"))}
+    except Exception: pass
+    meta = {"built": dt.datetime.now(LA).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()), "horizons": HORIZONS,
+            "cols": COLS, "price_dep": PRICE_DEP, "sectors": SECTORS, "live": live, "passed": passed,
+            "v4": {str(h): {lab: {m: {k: res4[h][lab][m][k] for k in ("ic", "t", "p10", "tmb")} for m in M4.MODELS} for lab in ("haircut_drag", "raw")} for h in HORIZONS},
+            "v4_pass": res4["pass"], "turnover": res4["turnover"],
+            "sleeves": {k: [[f, s] for f, s in v] for k, v in M4.SLEEVES.items()}, "sleeves_fin": {"S1": [[f, s] for f, s in M4.S1_FIN], "S5": [[f, s] for f, s in M4.S5_FIN]},
+            "sprice": [[f, s] for f, s in M4.SPRICE], "fin_mask": M4.FIN_MASK, "pillars": {k: [[f, s] for f, s in v] for k, v in M2.PILLARS.items()},
+            "regime_w": M4.REGIME_W, "weather": weather, "sq": sq, "sqA": sqA, "uq": uq, "fq": fq, "mq": mq, "smult": smult, "pq": pq, "cal": cal,
+            "base_rate": base_rate, "tsy": float(ST.tsy_at([now])[0]),
+            "magic": {"name": "Magic 15", "sub": "lean: quality compounders + downside protection", "pillars": {k: [[a, b] for a, b in ST.MAGIC[k]] for k in ST.LEAN},
+                      "labels": ST.MAGIC_LABEL, "left_out": ST.LEFT_OUT},
+            "style_bt": style_bt,
+            "spy_w": {"keys": [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy_w.index[-262:]], "a": [round(float(x), 4) for x in spy_w.values[-262:]]}}
+    meta["alias"] = alias
+    S = {"meta": meta, "rows": rows, "tmeta": meta_t, "finalists": fin30, "parity": {t: sc[t] for t in list(rows)[:400]}}
+    OUT.mkdir(parents=True, exist_ok=True)
+    json.dump(S, open(OUT / "shared.json", "w"), separators=(",", ":"))
+    print("shared:", len(rows), "tickers;", "live model", live, "| regime", rg["regime"], "| breadth", round(breadth, 3))
+    return S
+
+def dossiers_for(tickers, force=False):
+    import intel_dossiers as I
+    p2 = pd.read_parquet(CACHE / "panel_v2.parquet")
+    now = p2.date.max(); cur = p2[(p2.date == now)].set_index("ticker"); U = cur[cur.univ]
+    W = U.reset_index().assign(date=now); S = M4.sleeves(W); S.index = U.index
+    cik = M4.ticker_cik()
+    today = pd.Timestamp.today().normalize()
+    ctx = I.contexts(cur, U, S, cik, {t: next_earnings(t, today) for t in tickers})
+    out = {}
+    for t in tickers:
+        if t not in cur.index: continue
+        row = cur.loc[t].to_dict()
+        if t not in S.index:  # outside the top-1000: rank against it on the fly
+            one = M4.sleeves(pd.concat([W, cur.loc[[t]].reset_index().assign(date=now)], ignore_index=True)).iloc[-1]
+            c = ctx(t); c.update({k: float(one[k]) for k in ("S1", "S2", "S3")})
+            out[t] = I.build_one(t, row, c, force)
+        else:
+            out[t] = I.build_one(t, row, ctx(t), force)
+    return out
+
+# ---------------- per-page files ----------------
+def page(cfg, S, dossiers):
+    dan = bool(cfg.get("danelfin"))
+    books = {label: read_book(path, dan) for label, path in cfg["books"].items()}
+    mine = sorted({r["t"] for rows in books.values() for r in rows})
+    today = pd.Timestamp.today().normalize()
+    keys = S["meta"]["spy_w"]["keys"][-53:]
+    w53 = {}
+    for t in mine:
+        w = weekly_close(t)
+        if w is None: continue
+        a = w["adj"]; k = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in a.index]
+        m = dict(zip(k, a.values)); w53[t] = [rnd(m.get(x), 7) for x in keys]
+    own = set(mine) | set(S["finalists"])
+    dz = {t: d for t, d in dossiers.items() if t in own}
+    earn = {t: next_earnings(t, today) for t in mine}
+    data = {"meta": dict(S["meta"], page={"slug": cfg["slug"], "title": cfg["title"], "h1": cfg.get("h1", cfg["title"]),
+                                           "danelfin": dan, "show_sp500": bool(cfg.get("show_sp500", True))}, w53_keys=keys),
+            "rows": S["rows"], "tmeta": S["tmeta"], "finalists": S["finalists"], "books": books, "w53": w53, "earn": earn, "dossiers": dz}
+    if not dan:
+        for rows in data["books"].values():
+            for r in rows:
+                for k in ("ai", "fund", "tech", "sent", "lowrisk"): r.pop(k, None)
+    f = OUT / f"page_{cfg['slug']}.json"
+    json.dump(data, open(f, "w"), separators=(",", ":"))
+    json.dump(S["parity"], open(OUT / "parity.json", "w"))
+    print("page", cfg["slug"], "->", f.name, f"{f.stat().st_size/1e6:.2f} MB", "| books", list(books), "| dossiers", len(dz))
 
 def main():
-    res = json.load(open(CACHE / "model_results.json"))
-    p = pd.read_parquet(CACHE / "panel.parquet")
-    now = p.date.max()
-    cur = p[p.date == now].set_index("ticker")
-    spcur = json.load(open(CACHE / "sp500_current.json"))
-    latest_raw = json.load(open(CACHE / "latest_fundamentals.json"))
-    books = load_books()
-    sp = [t for t in spcur if t in cur.index]
-    missing_sp = [t for t in spcur if t not in cur.index]
-    mem = cur.loc[sp]
-    # sector medians (current S&P, by SIC-derived sector) for relative-valuation recompute in browser
-    secmed = {k: mem.groupby("sector")[k].median().dropna().to_dict() for k in ("ey", "fcfy")}
-    models = {}
-    for key, r in res.items():
-        kind, h = key.split("_"); h = int(h)
-        fm = r["model"]
-        q = {f: [float(x) for x in np.nanquantile(mem[f].astype(float), PCT)] for f in fm["features"]}
-        models[key] = {"kind": kind, "h": h, "features": fm["features"], "coef": fm["coef"], "intercept": fm["intercept"],
-                       "q": q, "train": [fm["train_start"], fm["train_end"]], "n_train": fm["n_train"]}
-    # score function (python mirror of app.js)
-    def logit_p(key, feats):
-        m = models[key]; z = m["intercept"]
-        for f, c in zip(m["features"], m["coef"]):
-            v = qpct(nz(feats.get(f)), m["q"][f]); z += c * ((v - 0.5) if v is not None else 0.0)
-        return 1 / (1 + math.exp(-z))
-    all_tickers = list(dict.fromkeys(sp + [t for d in books.values() for t in d.Ticker]))
-    feats_by = {}
-    for t in all_tickers:
-        if t not in cur.index: continue
-        row = cur.loc[t]
-        f = {k: nz(row.get(k)) for k in M.PRICE + FUND_STATIC + ["ey", "fcfy", "sy", "bm", "ey_vs_hist", "fcfy_vs_hist", "ey_vs_sector", "fcfy_vs_sector"]}
-        sec = row.get("sector")
-        for k in ("ey", "fcfy"):  # same sector medians the browser uses on refresh
-            med = secmed[k].get(sec)
-            f[f"{k}_vs_sector"] = (f[k] - med) if (f[k] is not None and med is not None) else None
-        feats_by[t] = f
-    has_fund = {t: (latest_raw.get(t) is not None and nz(latest_raw[t].get("shares_adj")) is not None and
-                    any(feats_by[t].get(k) is not None for k in ("ey", "fcfy", "roe"))) for t in feats_by}
-    # score distribution quantiles among current S&P members -> percentile -> OOS decile calibration
-    for key in models:
-        ps = [logit_p(key, feats_by[t]) for t in sp if t in feats_by]
-        models[key]["pq"] = [float(x) for x in np.quantile(ps, PCT)]
-        oos = pd.read_parquet(CACHE / f"oos_{key}.parquet")
-        if key.startswith("price_"):
-            # calibrate price-only buckets on the same test window as the full model so probabilities are comparable
-            fs = pd.Timestamp(res["full_" + key.split("_")[1]]["metrics"]["test_start"])
-            oos = oos[oos.date >= fs]
-        models[key]["cal"] = decile_table(oos)
-        models[key]["cal_window"] = [str(oos.date.min().date()), str(oos.date.max().date())]
-        met = res[key]["metrics"]
-        models[key]["metrics"] = {k: met[k] for k in met if k not in ("calibration",)}
-        models[key]["verdict"] = verdict(met)
-    def calib(key, p):
-        m = models[key]; s = qpct(p, m["pq"]); cal = m["cal"]
-        mids = [c["mid"] for c in cal]
-        out = {"p_raw": p, "pct": s}
-        for k in ("hit", "p10", "p50", "p90"):
-            out[k] = float(np.interp(s, mids, [c[k] for c in cal]))
-        return out
-    # ---- G1 v2: pre-registered composite (Model A), replaces the v1 full model for names with fundamentals ----
-    res2 = {int(k): v for k, v in json.load(open(CACHE / "model_v2_results.json")).items()}
-    p2 = pd.read_parquet(CACHE / "panel_v2.parquet")
-    cur2 = p2[p2.date == p2.date.max()].set_index("ticker")
-    U2 = cur2[cur2.univ]
-    sq = {}
-    for sec, g in U2.groupby("sector"):
-        sq[sec] = {f: ([float(x) for x in np.nanquantile(g[f].astype(float), PCT)] if g[f].notna().sum() >= 5 else None) for f in M2.A_FEATS}
-    pillars = {k: [[f, s_] for f, s_ in v] for k, v in M2.PILLARS.items()}
-    def comp_score(f, sec):
-        qs = sq.get(sec) or {}
-        pv = []
-        for comps in pillars.values():
-            vals = []
-            for name, sign in comps:
-                q = qs.get(name); v = qpct(nz(f.get(name)), q) if q else None
-                vals.append(sign * ((v - 0.5) if v is not None else 0.0))
-            pv.append(sum(vals) / len(vals))
-        return sum(pv) / len(pv)
-    for t in feats_by:  # A inputs from the v2 panel (same PIT code), sector tag for the browser
-        if t in cur2.index:
-            for k in M2.A_FEATS: feats_by[t][k] = nz(cur2.loc[t].get(k))
-            feats_by[t]["_sector"] = cur2.loc[t, "sector"]
-        else:
-            feats_by[t]["_sector"] = cur.loc[t, "sector"]
-    a_now = [comp_score({k: nz(U2.loc[t].get(k)) for k in M2.A_FEATS}, U2.loc[t, "sector"]) for t in U2.index]
-    pqA = [float(x) for x in np.quantile(a_now, PCT)]
-    for h in HORIZONS:
-        r2 = res2[h]; oos2 = pd.read_parquet(CACHE / f"oos_v2_{h}.parquet").rename(columns={"A": "p"})
-        w, spm, v1m = r2["wide"]["A"], r2["sp500"]["A"], res[f"full_{h}"]["metrics"]
-        met = {"test_start": r2["test_window"][0], "test_end": r2["test_window"][1], "independent_periods": round(w["dates"] / h, 1),
-               "base_rate": w["base_rate"], "auc": w["auc"], "mean_date_auc": None, "rank_ic": w["rank_ic"],
-               "rank_ic_t_overlap_adj": w["ic_t_ovl"], "top_minus_bottom_decile": w["tmb"], "tmb_share_positive": w["tmb_pos"], "ece": w["ece"]}
-        models[f"full_{h}"] = {"type": "comp", "kind": "full", "h": h, "pillars": pillars, "pq": pqA, "cal": decile_table(oos2),
-                               "cal_window": r2["test_window"], "metrics": met, "verdict": verdict(met),
-                               "cmp": {"sp_A": spm, "sp_B": r2["sp500"]["B"], "wide_B": r2["wide"]["B"],
-                                       "v1": {"auc": v1m["auc"], "rank_ic": v1m["rank_ic"], "t": v1m["rank_ic_t_overlap_adj"], "tmb": v1m["top_minus_bottom_decile"]}}}
-    def comp_calib(h, f):
-        m = models[f"full_{h}"]; a = comp_score(f, f.get("_sector")); s = qpct(a, m["pq"]); mids = [c["mid"] for c in m["cal"]]
-        o = {"p_raw": a, "pct": s}
-        for k in ("hit", "p10", "p50", "p90"): o[k] = float(np.interp(s, mids, [c[k] for c in m["cal"]]))
-        return o
-    # ---- style boxes: Buffett & Munger rules + Magic 15 pillars (display only; see docs/PREREGISTRATION_STYLE_SCORES.md) ----
-    ph = ST.add_hist(p2[p2.date >= p2.date.max() - pd.DateOffset(months=62)])
-    hist_now = ph[ph.date == ph.date.max()].set_index("ticker")[["roe_med5", "roe_min5", "roa_min5"]]
-    tsy_now = float(ST.tsy_at([p2.date.max()])[0])
-    mq = {f: [float(x) for x in np.nanquantile(U2[f].astype(float), PCT)] for f in ST.MAGIC_FEATS}
-    def bm_static(t, f):
-        row = pd.DataFrame([{**{k: f.get(k) for k in ("lev", "om_stab", "gm", "dil_3y", "fcfy")},
-                             **({k: nz(hist_now.loc[t, k]) for k in hist_now.columns} if t in hist_now.index else {"roe_med5": None, "roe_min5": None, "roa_min5": None})}]).astype(float)
-        c = ST.bm_components(row, tsy_now).iloc[0].to_dict()
-        c.pop("fcf_vs_treasury"); return {k: float(v) for k, v in c.items()}, {k: nz(row.iloc[0][k]) for k in ("roe_med5", "roe_min5", "roa_min5")}
-    def bm_total(st, fcfy):
-        fv = 1.0 if fcfy is None else (2.0 if fcfy >= tsy_now else (1.0 if fcfy >= .6 * tsy_now else 0.0))
-        return sum(st.values()) + fv, fv
-    def magic(f):
-        out = {}
-        for k in ST.LEAN:
-            comps = ST.MAGIC[k]; vals = []
-            for name, sign in comps:
-                v = qpct(nz(f.get(name)), mq[name])
-                vals.append(.5 if v is None else (v if sign > 0 else 1 - v))
-            out[k] = sum(vals) / len(vals)
-        return 10 * sum(out.values()) / len(out), out
-    st_res = json.load(open(CACHE / "style_test_results.json"))
-    ln = json.load(open(CACHE / "lean_test_results.json"))
-    def sb(h, sc, key):
-        r = ln[str(h)]
-        return {"wide": {k: r["wide"][sc][k] for k in ("ic", "t", "tmb", "auc")}, "sp": {k: r["sp500"][sc][k] for k in ("ic", "t")},
-                "partial_ic": r[f"red_{sc}"]["partial_ic"] if sc != "A" else None, "partial_t": r[f"red_{sc}"]["partial_t"] if sc != "A" else None}
-    style_bt = {lab: {h: sb(h, sc, lab) for h in HORIZONS} for lab, sc in (("BM", "BM"), ("M15", "L15"), ("M15_old", "M15"), ("A", "A"))}
-    tick = {}
-    for t, f in feats_by.items():
-        kind = "full" if has_fund[t] else "price"
-        sc = {}
-        for h in HORIZONS:
-            sc[h] = comp_calib(h, f) if kind == "full" else calib(f"{kind}_{h}", logit_p(f"{kind}_{h}", f))
-        raw = latest_raw.get(t) or {}
-        sty = None
-        if kind == "full":
-            bst, hv = bm_static(t, f); bmt, fv = bm_total(bst, f.get("fcfy")); mt, mpil = magic(f)
-            sty = {"bm_st": bst, "bm": bmt, "bm_fcf": fv, "hist": hv, "m15": mt, "m15p": mpil}
-        tick[t] = {"sty": sty, "kind": kind, "sector": cur.loc[t, "sector"], "px": nz(cur.loc[t, "px_close"]),
-                   "f": f, "raw": {k: nz(raw.get(k)) for k in ("rev", "ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj")},
-                   "hist": {"ey": nz(cur.loc[t].get("ey_hist_med")), "fcfy": nz(cur.loc[t].get("fcfy_hist_med"))},
-                   "s": sc, "sp": t in spcur,
-                   "name": (spcur.get(t, {}) or {}).get("name"), "gics": (spcur.get(t, {}) or {}).get("sector")}
-    # book metadata (Danelfin AI score, NEW shares)
-    bk = {}
-    for b, d in books.items():
-        rows = []
-        for _, r in d.iterrows():
-            t = r["Ticker"]
-            if t in tick and not tick[t]["name"]: tick[t]["name"] = r.get("Company")
-            rows.append({"t": t, "name": r.get("Company"), "ai": nz(r.get("AI Score")),
-                         "shares": nz(r.get("Shares")) if b == "NEW" else None, "scored": t in tick})
-        bk[b] = rows
-    la = ZoneInfo("America/Los_Angeles")
-    spy = pd.read_parquet(PRICES / "SPY.parquet")["adj"].resample("W-FRI").last().dropna().iloc[-262:]
-    spy_keys = [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy.index]
-    meta = {"spy_w": {"keys": spy_keys, "a": [round(float(x), 4) for x in spy.values]}, "built": dt.datetime.now(la).strftime("%Y-%m-%d %H:%M %Z"), "price_asof": str(now.date()),
-            "horizons": HORIZONS, "secmed": secmed, "sq": sq, "mq": mq, "tsy": tsy_now,
-            "magic": {"name": "Magic 15", "sub": "lean: quality compounders + downside protection", "pillars": {k: [[a, b] for a, b in ST.MAGIC[k]] for k in ST.LEAN}, "labels": ST.MAGIC_LABEL, "left_out": ST.LEFT_OUT},
-            "style_bt": style_bt, "style_verdict": {"BM": "KEEP", "M15": "SWAPPED to lean version (passed its pre-registered rule)"}, "missing_sp": missing_sp,
-            "n_sp": len(sp), "universe_note": "Composite ranks within SIC sector against the current top-1000 US-listed universe. Current S&P 500 per Wikipedia constituents table (fetched at build) plus every ticker in the five books."}
-    full = {"meta": meta, "models": models, "tick": tick, "books": bk, "book_label": BOOK_LABEL}
-    out = ROOT / "build" / "data"; out.mkdir(parents=True, exist_ok=True)
-    json.dump(full, open(out / "main.json", "w"), separators=(",", ":"))
-    keep = set(r["t"] for b in ("OTW", "OTW2") for r in bk[b])
-    otw = dict(full); otw["tick"] = {t: v for t, v in tick.items() if t in keep}
-    otw["books"] = {b: bk[b] for b in ("OTW", "OTW2")}
-    json.dump(otw, open(out / "otw.json", "w"), separators=(",", ":"))
-    # console summary for the report (local only)
-    for b, rows in bk.items():
-        for h in (12, 36):
-            ranked = sorted([r["t"] for r in rows if r["t"] in tick], key=lambda t: -tick[t]["s"][h]["hit"])
-            print(b, h, [(t, round(tick[t]["s"][h]["hit"], 3), tick[t]["kind"][0]) for t in ranked[:5]])
-    print("missing", missing_sp, "price-only:", [t for t in tick if tick[t]["kind"] == "price"])
-    for key in sorted(models): print(key, models[key]["verdict"], [round(c["hit"], 3) for c in models[key]["cal"]])
+    args = sys.argv[1:]
+    only = args[args.index("--page") + 1] if "--page" in args else None
+    pages = [p for p in load_config() if only in (None, p["slug"])]
+    if "--site-only" in args and (OUT / "shared.json").exists():
+        S = json.load(open(OUT / "shared.json"))
+    else:
+        S = shared()
+    pool = {}
+    dd = CACHE / "dossiers"
+    for f in dd.glob("*.json"):
+        try: pool[f.stem] = json.load(open(f))
+        except Exception: pass
+    if "--site-only" not in args and "--no-dossiers" not in args:
+        want = set(S["finalists"])
+        for p in load_config():
+            for path in p["books"].values(): want |= {x["t"] for x in read_book(path, False)}
+        pool.update(dossiers_for(sorted(want)))
+    for p in pages: page(p, S, pool)
 
 if __name__ == "__main__":
     main()

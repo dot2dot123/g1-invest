@@ -6,6 +6,89 @@ G1 is for Gary A's personal research only. It is not financial advice.
 
 ---
 
+## 0. G1 v4 (current; added 2026-11-12). Where this section conflicts with later sections, this section wins.
+
+**What changed.**
+- **Engine test.** A five-sleeve quant engine (S_quant) was pre-registered in `docs/PREREGISTRATION_V4.md` and tested against the v2 composite A. It FAILED, so A is still the live quant score. Everything else in v4 ships on top of A.
+- **New page features:**
+  - Market Weather & Cash Allocation banner
+  - "Look Up Any Stock" report card for about 5,800 US tickers (bundled data, no wait)
+  - six-column table: verdict, G1 Score, Upside/Safety bars, 1-yr win odds with a $ range, half-Kelly size
+  - three-stage ratchet stops
+  - Portfolio Health card (sector concentration over 35%, pairwise correlation over 0.80)
+  - rule-based business dossiers
+  - Danelfin sub-scores from the uploaded CSVs (owner pages only)
+  - multi-user pages from `config/users.json`
+- **Superseded draft.** `docs/PREREGISTRATION_V3.md` was superseded by v4 before any test.
+
+**Pipeline additions** (all free data; scripts in `pipeline/`):
+- **`fundamentals.py` + `features.py`.** New XBRL tags:
+  - AssetsCurrent / LiabilitiesCurrent
+  - R&D
+  - LongTermInvestments / MarketableSecuritiesNoncurrent, EquityMethodInvestments, ShortTermInvestments / MarketableSecuritiesCurrent
+  - ContractWithCustomerLiability / DeferredRevenue (and their current + noncurrent parts)
+- **New features:** fcf_conv, fcfy_ev, fcfy_adj_ev, ey_adj_ev (adjusted EV = max(mcap + debt − cash − non-operating investments, 0.25·mcap)), inc_roic_3y, inc_gm, def_rev_g1, rd_roi, rule_of_40, Piotroski f_score, eq_assets, roe_stab, roic_5y_med, post_filing_drift (SEC filing date × Yahoo daily price/volume), vcp_ratio, up_down_vol_50d, beta_down, cvar_5, sigma_down, sma40_below, last_px_ord.
+- **`features_v2.py`** keeps them in `cache/panel_v2.parquet` and adds `sic`. Runtime is about 30 minutes because the daily features are slower.
+- **`fetch_macro.py`.** Keyless FRED CSVs `BAMLH0A0HYM2` and `T10Y2Y` go to `cache/fred.parquet`. The free HY OAS history starts 2023-11-13, so the backtest drops the HY clauses before then (pre-registered).
+- **`fetch_form4.py`.** SEC Insider Transactions Data Sets (quarterly zips, about 14 MB each, 2013q1→latest) go to `cache/form4_buys.parquet` as (issuer CIK, filing date, owner). Only Form 4 code "P" purchases are kept.
+  - form4_cluster = at least 3 distinct buyers in 90 days.
+  - Note: recent quarters live under `/files/datastandardsinnovation/...`, older ones under `/files/structureddata/...`.
+- **`model_v4.py`.** Sleeves S1–S5, sector momentum multiplier, regime (Risk-On / Neutral / Risk-Off), U, D, S_quant and S_price. It also computes the Shumway haircut labels, the 10 bps × 2 × turnover × h top-decile drag, and the pass rule. Writes `cache/model_v4_results.json` and `cache/oos_v4_{h}.parquet`.
+- **`build_site.py`:**
+  - `build/data/shared.json`: the any-ticker columnar bundle (`meta.cols` + `rows[t]` arrays, 6 significant digits), plus `tmeta[t]` = [sector index, has fundamentals, financial (SIC 6000–6799), S&P member, Form 4 cluster, top-1000, name].
+  - The bundle also carries quantile tables `sq` (v4 within-sector, financials masked), `sqA` (A), `uq` (universe), `fq` (financials group) and `mq` (Magic 15), plus sector multipliers, score quantiles `pq`, decile bands `cal[h][model]` (haircut labels), weather, share-class aliases and finalists (top 30 by the live score).
+  - One `build/data/page_<slug>.json` per configured page.
+  - Flags: `--site-only` reuses `shared.json`; `--page SLUG`; `--no-dossiers`.
+  - `live_scores()` is the Python mirror of `rawScores()` in `web/app.js`. It uses a left-to-right float sum (`fsum_js`), because Python ≥ 3.12 `sum()` uses compensated summation and differs from JS in the last bits.
+- **`intel_dossiers.py` + `analyze_ticker.py T`:**
+  - Rule-based dossiers from SEC data: the XBRL facts plus the SEC submissions API for recent 8-K/10-K/10-Q links. No LLM, no paid data.
+  - Five sub-scores (moat −2..2, hidden stakes 0..3, talent/R&D −1..2, pricing/backlog −2..2, variant gap −2..2) sum to f_strat (clamped to ±10), plus one-line consensus, variant edge, threats and catalysts. Every claim has a source link; thin evidence scores 0.
+  - Cached in `cache/dossiers/T.json` for 14 days. Built for the holdings in every configured book plus the top 30.
+  - Optional cited analyst notes go in `cache/dossiers/notes/T.json` as `{"scores": {"moat": {"value": 1, "why": "…", "sources": ["https://…"]}}, "sotp_usd": …, "sotp_sources": [...]}`. A note only counts if it has sources.
+  - S_v4 = clamp(base + 1.5·f_strat, 0, 100), shown as "v4*" and labelled unvalidated. Base = 100 × A's universe percentile while A is live.
+
+**v4 test results** (wide top-1000, month-ends 2014+, haircut + drag labels; IC (t); last column = top-decile p10 S_quant / A):
+
+| h | S_quant | A | U | D | S_price | p10 S_quant / A |
+|---|---|---|---|---|---|---|
+| 6m | 0.035 (1.54) | 0.036 (2.41) | 0.032 (1.41) | 0.021 (1.00) | 0.027 (0.81) | -0.217 / -0.223 |
+| 12m | 0.041 (1.35) | 0.049 (2.24) | 0.031 (0.97) | 0.029 (1.02) | 0.022 (0.48) | -0.312 / -0.308 |
+| 24m | 0.047 (1.20) | 0.076 (2.20) | 0.026 (0.67) | 0.056 (1.57) | 0.021 (0.32) | -0.438 / -0.414 |
+| 36m | 0.075 (1.76) | 0.090 (2.39) | 0.056 (1.24) | 0.070 (2.12) | 0.046 (0.64) | -0.500 / -0.501 |
+| 48m | 0.090 (1.83) | 0.104 (2.64) | 0.068 (1.22) | 0.088 (2.63) | 0.053 (0.59) | -0.585 / -0.575 |
+| 60m | 0.078 (1.31) | 0.108 (2.76) | 0.054 (0.82) | 0.084 (1.99) | 0.033 (0.31) | -0.659 / -0.644 |
+
+- **Pass rule:** S_quant beat A's IC at 0/6 horizons (needed 4); t > 2.5 at 12m/24m: False; better p10 at 2/6 (needed 4). **FAIL.**
+- **Haircut never triggered.** The free-data panel contains no delisted names (every ticker still trades), so the Shumway haircut affected 0 rows.
+
+**Execution rules in the browser** (model estimates, not advice; exact definitions in the pre-registration, section 11):
+- **Verdict:** SELL / BROKEN → CLIMAX TRIM → ACCUMULATE (Staggered) → STRONG BUY → HOLD.
+- **Half-Kelly:** from 12m decile odds and p90/|p10|, scaled by 0.25/σ_down, max 10%, halved within 7 days of the estimated earnings date (last-year SEC filing date + 364 days).
+  - With current odds (top decile ≈ 44–46% to beat the S&P at 12m), half-Kelly is 0 for nearly every name. The page shows "0% · no edge".
+- **Ratchet stop:** Stage 1 max(40-week SMA of closes, P·(1 + cvar_5)); Stage 2 breakeven at +20% (needs a purchase price); Stage 3 10-week EMA trail at +40%.
+- **Market Weather:** Sunny / Cloudy / Storm Warning. Bear Preservation means a 30–50% SGOV reserve and paused buys. CAPITULATION BUY needs SPY ≥ 15% off its high, breadth crossing above 0.40 from below 0.35, and HY ≥ 0.5 pp below its 13-week peak.
+  - HY, the curve and breadth are fixed at build time; SPY is recomputed live on Refresh.
+
+**Multi-user pages:**
+- `config/users.json` is gitignored. It holds local paths only: book CSVs and password files. `config/users.example.json` is the committed template.
+- Each page has `slug`, `output_path` ("" for the root page, "otw/" for the OTW page), `title`, `h1`, `password_file`, `danelfin` (true only for Gary's pages), `show_sp500`, and `books` {label: csv path}.
+- Today only Gary is configured, with slugs `gary` (root) and `gary-otw` (`otw/`), both using the existing password file.
+- **To add a friend:**
+  1. Create their password file under `/home/box/agent-data/secrets/` (never in the repo).
+  2. Put their CSV somewhere outside the repo, as a `Ticker` column or headerless `Ticker`, `Ticker,Shares` or `Ticker,Shares,Cost` rows.
+  3. Add a page entry with `danelfin: false` and an `output_path` such as `u/<slug>/`.
+  4. Run `scripts/deploy_user.sh <slug>`. This takes seconds and reuses `build/data/shared.json`.
+  5. `git add <output_path>index.html`, commit and push.
+  6. Run `scripts/verify_live.py`.
+- **Isolation:** a page file holds only its own books, Danelfin fields only if `danelfin: true`, and dossiers, earnings dates and weekly prices only for its own holdings plus the public top 30. The any-ticker bundle is public-data only.
+- **Scripts:**
+  - `scripts/encrypt-pages.sh [SLUG]` loops over the config, encrypts each page with its own password file and leak-checks each output (`g1data|"rows":|"tmeta":|"books":|"tick":|"models":|OTW_holdings`).
+  - `scripts/verify_live.py` loops over the config, unlocks each page with its own password file and checks rows, the weather banner and page errors.
+
+**Watchlist:** the localStorage key is still `g1.research.v1`. Old entries keep their ticker and name, and scores are recomputed from the bundle.
+
+---
+
 ## 1. Architecture overview
 
 ```
@@ -320,7 +403,7 @@ Earlier names in each list win. IFRS names are a fallback for foreign filers.
   - `p10`, `p50`, `p90` of y. These are the "bad case / typical / good case" band.
 - **"Usual"** is that horizon's base rate. On the page, "above usual" or "below usual" means at least 3 percentage points above or below it.
 
-### Price-only fallback (v1 logistic model, still used)
+### Price-only fallback (v1 logistic model; REPLACED in v4 by S_price, see section 0)
 
 - Features: the 10 price features, as per-date percentile ranks among S&P members, minus 0.5 (missing = 0).
 - One L2 logistic regression per horizon (C = 0.5), trained from 2003 and walk-forward.
@@ -417,7 +500,7 @@ Both style scores are **rule-based proxies of published principles, not those in
 
 ---
 
-## 8. Dashboard build and publishing
+## 8. Dashboard build and publishing (v2/v3-era description; for v4 files, config and scripts see section 0)
 
 1. `build_site.py` writes `build/data/main.json` (all tabs) and `build/data/otw.json` (OTW and OTW #2 tickers only). Both are gitignored. Contents:
    - `meta`: build time, price date, the quantile tables `sq` and `mq`, Treasury yield, Magic 15 definition, backtest summaries, bundled SPY weekly series.
