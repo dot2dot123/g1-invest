@@ -1,6 +1,0 @@
-# G1 site reverse proxy. Free workers.dev subdomain; no custom domain, no paid features.
-# Deploy (after `npx wrangler login`):  npx wrangler deploy --config workers/wrangler.toml
-name = "g1-site-proxy"
-main = "site-proxy.js"
-compatibility_date = "2026-11-13"
-workers_dev = true
