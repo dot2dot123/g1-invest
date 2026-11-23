@@ -71,6 +71,8 @@
     const adj = Math.max(mcap + debt - cash - (f.non_op || 0), 0.25 * mcap);
     o.fcfy_adj_ev = fcf != null ? fcf / adj : null;
     o.ey_adj_ev = f.ebit != null ? f.ebit / adj : null;
+    o.oe_ev = f.fcf_oe != null && ev > 0 ? f.fcf_oe / ev : null;          // v4.3 owner-earnings yield
+    o.fcf_avg3_ev = f.fcf_avg3 != null && ev > 0 ? f.fcf_avg3 / ev : null;  // v4.3 normalized FCF yield
     return o;
   }
 
@@ -122,11 +124,27 @@
     let v = qpct(blend, q.blend); const gated = bm < 4.0; if (gated) v = Math.min(v, 0.65);
     return { V42: 100 * v, bm, l15, P1: p1, P2: p2, P3: p3, P4: p4, gated };
   }
+  // ---------- v4.3 FCF pillar (mirror of build_site.p5_live / v43_blend / v43_score; docs/PREREGISTRATION_V4_3_FCF.md) ----------
+  function p5Of(f, sector) {
+    if (sector === "Financials" || !M.v43q) return 0.5;
+    const sq = M.v43q.sec[sector] || {};
+    const r = (k, x) => (x == null ? 0.5 : sq[k] ? qpct(x, sq[k]) : 0.5);
+    const c = f.conv3 == null ? null : Math.min(f.conv3, 1.5);
+    const sd = r("fcfm_std5", f.fcfm_std5);
+    return 0.35 * (r("oe_ev", f.oe_ev) + r("fcf_avg3_ev", f.fcf_avg3_ev)) / 2 + 0.20 * (r("fcf_g3", f.fcf_g3) + r("fcf_g5", f.fcf_g5)) / 2
+      + 0.15 * r("conv3c", c) + 0.15 * r("fcfm0", f.fcfm0) + 0.15 * (1 - sd) - 0.15 * (f.capex_cut || 0);
+  }
+  function v43Of(f, sector, v) {
+    const p5 = p5Of(f, sector);
+    const blend = (v.P1 + v.P2 + v.P3 + v.P4 + p5) / 5;
+    let s = qpct(blend, M.v43q.blend); if (v.bm < 4.0) s = Math.min(s, 0.65);
+    return { V43F: 100 * s, P5: p5 };
+  }
   function scoreTicker(t, f, m) {
     // f: features (shipped or live). m: tmeta-like {sector, fund, fin, form4}
     const wx = weather();
     const r = rawScores(f, m.sector, m.fin, m.form4, wx.regime);
-    if (m.fund) { const v = v42Of(f, m.sector); r.V42 = v.V42; r.v42 = v; } else r.V42 = null;
+    if (m.fund) { const v = v42Of(f, m.sector); r.V42 = v.V42; r.v42 = v; if (M.v43q) { const w = v43Of(f, m.sector, v); r.V43F = w.V43F; r.v42.P5 = w.P5; } } else { r.V42 = null; r.V43F = null; }
     const model = m.fund ? M.live : "S_price";
     const raw = r[model], bands = {};
     HZ_STRIP.forEach((h) => {
@@ -509,7 +527,7 @@
     return br != null ? ` Usual chance of beating the S&amp;P 500: ${pct(br)}.` : "";
   }
   function g1Cell(sc) {
-    const tip = sc.kind === "price" ? "Price-only score (no SEC fundamentals): momentum, drawdown and tail risk" : M.live === "V42" ? "G1 Quant Score (v4.2, passed its pre-registered test): percentile among the top 1,000 US stocks" : "G1 composite percentile (validated live score)";
+    const tip = sc.kind === "price" ? "Price-only score (no SEC fundamentals): momentum, drawdown and tail risk" : M.live === "V43F" ? "G1 Score v4.3 (v4.2 + free-cash-flow / owner-earnings pillar; passed its pre-registered deployment rule): percentile among the top 1,000 US stocks" : M.live === "V42" ? "G1 Quant Score (v4.2, passed its pre-registered test): percentile among the top 1,000 US stocks" : "G1 composite percentile (validated live score)";
     return `<div class="scorecell"><span class="g1" style="background:${g1Color(sc.g1)}" title="${esc(tip)}">${Math.round(sc.g1)}</span>${sc.kind === "price" ? '<span class="tiny muted">price-only</span>' : ""}</div>`;
   }
   function oddsCell(e) {
@@ -681,7 +699,11 @@
     const head = `<tr><th>Horizon</th><th>G1 v4.2</th><th>v2 composite A</th></tr>`;
     const m3 = M.v42_3m;
     const line3 = m3 ? `<p class="small">3-month add-on (docs/PREREGISTRATION_V4_2_3M.md, committed before any 3m result): V42 rank IC ${m3.ic_V42.toFixed(3)} (t≈${m3.t_winner.toFixed(2)}) vs A ${m3.ic_A.toFixed(3)} (t≈${m3.primary.A.t.toFixed(2)}). Winner for the 3m G1 cell: <b>${m3.winner}</b>${m3.unvalidated ? " (unvalidated: t &lt; 2; the cell is marked and does not change the live headline score)" : ""}.</p>` : "";
-    $("bt").innerHTML = `<p class="small">Pre-registered test (docs/PREREGISTRATION_V4_2.md, committed before any result): top 1,000 US stocks, month-ends from 2014, no fitted parameters. v4.2 = equal blend of Buffett &amp; Munger, lean Magic 15, cyclically-adjusted value (5-year median EBIT/EV and FCF/EV, within sector) and trend &amp; defense (12-1 month momentum within sector, low downside beta), capped at the 65th percentile when Buffett &amp; Munger is below 4. Result: <b>${ps.PASS ? "PASS: v4.2 is the live G1 Score" : "FAIL: composite A stays live"}</b> (rank IC beats A at ${ps.ic_wins}/6 horizons; turnover with a 15%/35% hold buffer ${M.v42_turnover.hyst.V42.toFixed(3)} vs ${M.v42_turnover.hyst.A.toFixed(3)} a month, ratio ${ps.turnover_ratio.toFixed(2)} ≤ 1.2).</p>${line3}
+    const v3 = M.v43, pc = (x) => `${(100 * x).toFixed(1)}%`;
+    const t43 = v3 ? `<p class="small"><b>G1 v4.3 (live${M.live === "V43F" ? "" : " candidate"}):</b> v4.2 plus a fifth, equal-weight free-cash-flow pillar (owner-earnings yield after stock comp, 3-year average FCF yield, 3–5 year FCF growth, cash conversion, FCF margin and its stability, penalty when FCF is flattered by capex cuts; banks and insurers neutral). Pre-registered in docs/PREREGISTRATION_V4_3_FCF.md and _LT.md before any result.</p>
+      <div class="tblwrap"><table><tr><th>Horizon</th><th>v4.2 IC</th><th>v4.3 IC</th><th>Top-decile chance of beating S&amp;P (v4.2 → v4.3)</th><th>Top-decile excess p10 / p50 / p90 (v4.3)</th></tr>${[3, ...HZ].map((h) => { const a = v3.hz[h].V42, b = v3.hz[h].V43F; return `<tr><td>${h}m</td><td>${a.ic.toFixed(3)} <span class="muted">(t≈${a.t.toFixed(1)})</span></td><td>${b.ic.toFixed(3)} <span class="muted">(t≈${b.t.toFixed(1)})</span></td><td>${pc(a.top_hit)} → ${pc(b.top_hit)}</td><td>${sgn(b.top_p10)} / ${sgn(b.top_p50)} / ${sgn(b.top_p90)}</td></tr>`; }).join("")}</table></div>
+      <p class="small">Top 30, rebalanced monthly 2014–2026 with costs: v4.2 ${pc(v3.top30.V42.cagr)} a year, worst drawdown ${pc(v3.top30.V42.mdd)}, beat the S&amp;P in ${pc(v3.top30.V42.month_hit)} of months; v4.3 ${pc(v3.top30.V43F.cagr)}, ${pc(v3.top30.V43F.mdd)}, ${pc(v3.top30.V43F.month_hit)} (S&amp;P 500 ${pc(v3.top30.V42.spy_cagr)}, ${pc(v3.top30.V42.spy_mdd)}). Survivorship caveat: the test universe only holds stocks that still trade, so all figures are optimistic.</p>` : "";
+    $("bt").innerHTML = t43 + `<p class="small">Pre-registered test (docs/PREREGISTRATION_V4_2.md, committed before any result): top 1,000 US stocks, month-ends from 2014, no fitted parameters. v4.2 = equal blend of Buffett &amp; Munger, lean Magic 15, cyclically-adjusted value (5-year median EBIT/EV and FCF/EV, within sector) and trend &amp; defense (12-1 month momentum within sector, low downside beta), capped at the 65th percentile when Buffett &amp; Munger is below 4. Result: <b>${ps.PASS ? "PASS: v4.2 is the live G1 Score" : "FAIL: composite A stays live"}</b> (rank IC beats A at ${ps.ic_wins}/6 horizons; turnover with a 15%/35% hold buffer ${M.v42_turnover.hyst.V42.toFixed(3)} vs ${M.v42_turnover.hyst.A.toFixed(3)} a month, ratio ${ps.turnover_ratio.toFixed(2)} ≤ 1.2).</p>${line3}
       <p class="small"><b>Caveat:</b> v4.2 ranks the whole list better and its top decile has milder bad outcomes, but its top-minus-bottom decile spread is much smaller than the composite's. Read the score as a broad ranking plus downside filter rather than a "buy only the top 10%" signal.</p>
       <div class="tblwrap"><table>${head}${rowsOf("primary")}</table></div>
       <details><summary class="small">Same test without the haircut and turnover drag</summary><div class="tblwrap"><table>${head}${rowsOf("raw")}</table></div></details>

@@ -52,9 +52,11 @@ def feats_at(F, t, mcap):
     out["fcf_ev2"] = f0 / ev if ev > 0 else np.nan
     oe = f0 - (0.0 if np.isnan(sbc0) else max(sbc0, 0.0))
     out["oe_ev"] = oe / ev if ev > 0 else np.nan               # owner earnings (FCF - SBC) / EV
+    out["fcf_oe"] = oe                                          # $ owner earnings (for live re-pricing)
     out["sbc_rev"] = sbc0 / rv[0] if rv[0] and rv[0] > 0 and not np.isnan(sbc0) else np.nan
     a3 = fc[:3]
     out["fcf_avg3_ev"] = np.mean(a3) / ev if ev > 0 and not np.isnan(a3).any() else np.nan
+    out["fcf_avg3"] = float(np.mean(a3)) if not np.isnan(a3).any() else np.nan
     for n in (3, 5):
         fn = fc[n]
         if np.isnan(fn): out[f"fcf_g{n}"] = np.nan

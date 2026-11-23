@@ -31,8 +31,11 @@ COLS = ["px", "mcap", "roic_5y_med", "inc_roic_3y", "fcf_conv", "gpa", "accruals
         # style history, stops
         "roe_med5", "roe_min5", "roa_min5", "sma40c", "ema10c",
         # v4.2: cyclically-adjusted value input, weekly volume/close quality for CLIMAX TRIM
-        "fcfy_ev", "wk_vol_x", "wk_close_pos"]
-PRICE_DEP = ["ey", "fcfy", "bm", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "mcap", "fcfy_ev"]
+        "fcfy_ev", "wk_vol_x", "wk_close_pos",
+        # v4.3 FCF pillar (docs/PREREGISTRATION_V4_3_FCF.md): $ owner earnings / 3y-avg FCF for live yields + static inputs
+        "fcf_oe", "fcf_avg3", "oe_ev", "fcf_avg3_ev", "fcf_g3", "fcf_g5", "conv3", "fcfm0", "fcfm_std5", "capex_cut", "fcf0"]
+PRICE_DEP = ["ey", "fcfy", "bm", "ey_vs_hist", "fcfy_adj_ev", "ey_adj_ev", "mcap", "fcfy_ev", "oe_ev", "fcf_avg3_ev"]
+P5_RANK = ["oe_ev", "fcf_avg3_ev", "fcf_g3", "fcf_g5", "conv3c", "fcfm0", "fcfm_std5"]
 
 def nz(v):
     try: f = float(v)
@@ -147,6 +150,43 @@ def v42_score(parts, M):
     if parts["bm"] < 4.0: v = min(v, 0.65)
     return 100 * v
 
+# ---------------- v4.3 (FCF) live score mirror (app.js v43Of) ----------------
+def _fx_one(args):
+    import fcf_features as X
+    t, mc, d = args
+    try:
+        F = X.load(t); return t, (X.feats_at(F, d, mc) if F else {})
+    except Exception: return t, {}
+
+def fcf_live(cur):
+    """Point-in-time FCF features at the build date for every shipped ticker (local SEC files only)."""
+    import multiprocessing as mp
+    d = str(pd.Timestamp(cur.date.iloc[0]).date()) if "date" in cur else None
+    jobs = [(t, float(r.mcap) if r.mcap == r.mcap else float("nan"), d) for t, r in cur.iterrows()]
+    with mp.Pool(int(os.environ.get("G1_PROCS", "5"))) as pool:
+        out = dict(pool.map(_fx_one, jobs, chunksize=16))
+    print("fcf live features:", sum(1 for v in out.values() if v), "of", len(out))
+    return out
+
+def p5_live(f, sector, M):
+    """FCF pillar P5 against shipped build-date within-sector quantiles (financials neutral 0.5)."""
+    if sector == "Financials": return 0.5
+    sq = M["v43q"]["sec"].get(sector) or {}
+    r = lambda k, x: (0.5 if x is None else (qpct(x, sq.get(k)) if sq.get(k) else 0.5))
+    c = f.get("conv3"); c = None if c is None else min(c, 1.5)
+    sd = r("fcfm_std5", f.get("fcfm_std5"))
+    return (0.35 * (r("oe_ev", f.get("oe_ev")) + r("fcf_avg3_ev", f.get("fcf_avg3_ev"))) / 2
+            + 0.20 * (r("fcf_g3", f.get("fcf_g3")) + r("fcf_g5", f.get("fcf_g5"))) / 2 + 0.15 * r("conv3c", c)
+            + 0.15 * r("fcfm0", f.get("fcfm0")) + 0.15 * (1 - sd) - 0.15 * (f.get("capex_cut") or 0))
+
+def v43_blend(parts, f, sector, M):
+    return (parts["P1"] + parts["P2"] + parts["P3"] + parts["P4"] + p5_live(f, sector, M)) / 5
+
+def v43_score(blend, bm, M):
+    v = qpct(blend, M["v43q"]["blend"])
+    if bm < 4.0: v = min(v, 0.65)
+    return 100 * v
+
 def fsum_js(xs):
     """Left-to-right float sum like JS reduce (Python >= 3.12 sum() uses compensated summation, which differs in the last bits)."""
     acc = 0.0
@@ -235,10 +275,11 @@ def score_one(t, S):
     meta = S["meta"]; mt = S["tmeta"][t]
     f = dict(zip(meta["cols"], S["rows"][t])) | {"form4": mt[4]}
     sector = meta["sectors"][mt[0]]
-    M = {k: meta[k] for k in ("sq", "sqA", "uq", "fq", "smult", "mq", "tsy", "v42q")} | {"regime": meta["weather"]["build_regime"]}
+    M = {k: meta[k] for k in ("sq", "sqA", "uq", "fq", "smult", "mq", "tsy", "v42q", "v43q") if k in meta} | {"regime": meta["weather"]["build_regime"]}
     sc = live_scores(f, sector, mt[2] == 1, M)
     if mt[1] == 1:
-        sc["V42"] = v42_score(v42_parts(f, sector, M), M); model = meta["live"]
+        pp = v42_parts(f, sector, M); sc["V42"] = v42_score(pp, M); model = meta["live"]
+        if "v43q" in M: sc["V43F"] = v43_score(v43_blend(pp, f, sector, M), pp["bm"], M)
     else: model = "S_price"
     raw = sc[model]
     quant = 100 * qpct(raw, meta["pq"][model]) if model == "A" else raw
@@ -310,6 +351,8 @@ def shared():
     res42 = {int(k) if k.isdigit() else k: v for k, v in json.load(open(CACHE / "model_v42_results.json")).items()}
     passed42 = bool(res42["pass"]["PASS"])
     live = "V42" if passed42 else ("S_quant" if passed else "A")
+    res43 = json.load(open(CACHE / "model_v43lt_results.json")) if (CACHE / "model_v43lt_results.json").exists() else None
+    if res43 and res43["decision"].get("deploy") == "V43F": live = "V43F"   # docs/PREREGISTRATION_V4_3_LT.md section 6
     res42_3 = json.load(open(CACHE / "model_v42_3m_results.json"))
     # regime + market weather
     fred, spy = M4.load_macro()
@@ -360,6 +403,7 @@ def shared():
             tk = v["ticker"].replace("-", "."); names.setdefault(tk, v["title"]); by_cik.setdefault(int(v["cik_str"]), []).append(tk)
     except Exception: pass
     spcur = json.load(open(CACHE / "sp500_current.json"))
+    FX = fcf_live(cur)
     rows, meta_t = {}, {}
     for t, r in cur.iterrows():
         rw = raw.get(t) or {}
@@ -372,6 +416,13 @@ def shared():
                 "fcfy_hist_med": r.get("fcfy_hist_med"), "non_op": rw.get("non_op"), "sma40c": sma40c, "ema10c": ema10c,
                 "fcfy_ev": r.get("fcfy_ev"), "wk_vol_x": wk_vol_x, "wk_close_pos": wk_close_pos}
         for k in ("ebit", "cfo", "capex", "equity", "debt", "cash", "shares_adj"): vals[k] = rw.get(k)
+        fx = FX.get(t) or {}
+        for k in ("fcf_oe", "fcf_avg3", "fcf_g3", "fcf_g5", "conv3", "fcfm0", "fcfm_std5", "capex_cut", "fcf0"): vals[k] = nz(fx.get(k))
+        # live yields use the same EV as the browser's reprice() (mcap + debt - cash from the shipped raw fundamentals)
+        sh, px_ = nz(rw.get("shares_adj")), nz(r.px_close)
+        ev = (sh * px_ + (nz(rw.get("debt")) or 0) - (nz(rw.get("cash")) or 0)) if (sh and px_) else None
+        vals["oe_ev"] = vals["fcf_oe"] / ev if (ev and ev > 0 and vals["fcf_oe"] is not None) else None
+        vals["fcf_avg3_ev"] = vals["fcf_avg3"] / ev if (ev and ev > 0 and vals["fcf_avg3"] is not None) else None
         rows[t] = [rnd(vals.get(k)) for k in COLS]
         has_fund = nz(rw.get("shares_adj")) is not None and any(nz(r.get(k)) is not None for k in ("ey", "fcfy", "roe"))
         sp = spcur.get(t) or {}
@@ -404,7 +455,14 @@ def shared():
     for t, pp in parts.items(): sc[t]["V42"] = v42_score(pp, M)
     for t in rows:
         if "V42" not in sc[t]: sc[t]["V42"] = None
-    pq = {m: [rnd(x, 12) for x in np.quantile([sc[t][m] for t in univ], PCT)] for m in ("A", "S_quant", "U", "D", "S_price", "V42")}
+    # v4.3 FCF pillar quantiles (within sector, current universe) and the 5-pillar blend
+    UF["conv3c"] = pd.to_numeric(UF.conv3, errors="coerce").clip(upper=1.5)
+    v43q = {"sec": {s_: {k: quant(g[k]) for k in P5_RANK} for s_, g in UF.groupby("sector")}, "blend": None}
+    M["v43q"] = v43q
+    b43 = {t: v43_blend(parts[t], feats(t), SECTORS[meta_t[t][0]], M) for t in parts}
+    v43q["blend"] = quant(pd.Series([b43[t] for t in univ]))
+    for t in rows: sc[t]["V43F"] = v43_score(b43[t], parts[t]["bm"], M) if t in b43 else None
+    pq = {m: [rnd(x, 12) for x in np.quantile([sc[t][m] for t in univ], PCT)] for m in ("A", "S_quant", "U", "D", "S_price", "V42", "V43F")}
     cal = {}
     for h in HORIZONS:
         o = pd.read_parquet(CACHE / f"oos_v4_{h}.parquet")
@@ -412,6 +470,9 @@ def shared():
         cal[h]["V42"] = decile_table(pd.read_parquet(CACHE / f"oos_v42_{h}.parquet"), "V42", f"yh{h}")
     o3 = pd.read_parquet(CACHE / "oos_v42_3.parquet")
     cal[3] = {m: decile_table(o3, m, "yh3") for m in ("V42", "A")}
+    if res43:
+        for h in [3] + HORIZONS:
+            cal[h]["V43F"] = decile_table(pd.read_parquet(CACHE / f"oos_v43_{h}.parquet"), "V43F", f"yh{h}")
     base_rate = {h: float((pd.read_parquet(CACHE / f"oos_v42_{h}.parquet")[f"yh{h}"] > 0).mean()) for h in HORIZONS}
     base_rate[3] = float((o3["yh3"] > 0).mean())
     # finalists: top 30 by the live quant score among the current universe (fundamentals required)
@@ -440,6 +501,14 @@ def shared():
             "style_bt": style_bt,
             "spy_w": {"keys": [str((d - pd.Timedelta(days=d.weekday())).date()) for d in spy_w.index[-262:]], "a": [round(float(x), 4) for x in spy_w.values[-262:]]}}
     meta["alias"] = alias
+    if res43:
+        meta["v43q"] = v43q
+        meta["v43"] = {"decision": res43["decision"], "top30": res43["top30"],
+                       "hz": {str(h): {m: {k: res43[str(h)][m][k] for k in ("ic", "t", "top_hit", "top_p10", "top_p50", "top_p90")}
+                                       for m in ("V42", "V43F", "V43S", "V43L")} for h in [3] + HORIZONS}}
+        if live == "V43F":   # 3m cell follows the live score; t < 2 at 3m -> marked unvalidated
+            t3 = res43["3"]["V43F"]["t"]
+            meta["v42_3m"] = dict(meta["v42_3m"], winner="V43F", t_winner=t3, unvalidated=bool(t3 < 2))
     S = {"meta": meta, "rows": rows, "tmeta": meta_t, "finalists": fin30, "parity": {t: sc[t] for t in list(rows)[:400]}}
     OUT.mkdir(parents=True, exist_ok=True)
     json.dump(S, open(OUT / "shared.json", "w"), separators=(",", ":"))
