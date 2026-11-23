@@ -53,3 +53,34 @@ Otherwise V42 stays live and the FCF features ship only as display/diagnostics. 
 the chosen one carries some selection optimism.
 
 ## 7. Results (appended after the run; nothing above was changed)
+
+Run: pipeline/fcf_features.py then pipeline/model_v43.py (2026-11-22). FCF coverage on non-financial universe rows 93.6%.
+Primary labels (haircut + hysteresis drag). "Top" = top-decile mean excess vs SPY after drag; "hit" = share of top-decile
+rows beating SPY.
+
+| h | V42 IC (t) / top / hit | V43_eq IC (t) / top / hit | V43_heavy IC (t) / top / hit | V43_gate IC (t) / top / hit | P5 alone IC (t) |
+|---|---|---|---|---|---|
+| 6m | .047 (2.23) / -.013 / .454 | .048 (2.40) / -.013 / .450 | .047 (2.51) / -.012 / .451 | .047 (2.43) / -.013 / .454 | .028 (1.99) |
+| 12m | .061 (2.27) / -.023 / .436 | .062 (2.45) / -.023 / .435 | .062 (2.57) / -.020 / .439 | .061 (2.48) / -.023 / .435 | .032 (1.78) |
+| 24m | .092 (2.83) / -.038 / .414 | .093 (3.04) / -.038 / .412 | .091 (3.18) / -.035 / .416 | .091 (3.13) / -.038 / .412 | .043 (1.50) |
+| 36m | .116 (4.05) / -.050 / .393 | .115 (4.37) / -.053 / .389 | .111 (4.45) / -.052 / .390 | .113 (4.50) / -.050 / .392 | .045 (1.31) |
+| 48m | .132 (4.38) | .130 (5.15) | .125 (5.83) | .127 (5.14) | .051 (1.45) |
+| 60m | .125 (3.23) | .124 (3.64) | .120 (3.97) | .120 (3.76) | .054 (1.46) |
+
+Top-minus-bottom decile (12/24/36m): V42 -.006/-.007/+.003; V43_eq -.004/+.004/+.016; V43_heavy .000/+.010/+.019; gate
+-.007/-.007/+.002. Hysteresis turnover: V42 .031, eq .031, heavy .033, gate .037 per month.
+
+Monthly top-30 equal-weight, 2014-01 to 2026-10 (153 months, 10 bps/side): 
+
+| | CAGR | SPY CAGR | Max DD | SPY Max DD | Down capture | Up capture | Months beating SPY | Turnover/mo |
+|---|---|---|---|---|---|---|---|---|
+| V42 | 10.4% | 13.9% | -26.1% | -23.9% | 0.83 | 0.80 | 45.1% | 20% |
+| V43_eq | 12.1% | 13.9% | -22.9% | -23.9% | 0.80 | 0.84 | 51.0% | 19% |
+| V43_heavy | 12.2% | 13.9% | -23.7% | -23.9% | 0.81 | 0.86 | 46.4% | 19% |
+| V43_gate | 10.7% | 13.9% | -26.1% | -23.9% | 0.82 | 0.81 | 44.4% | 20% |
+
+Decision: best candidate by mean 12/24/36m IC = V43_eq. Rule 1 FAILS (36m IC .115 < .116; 12m .062 > .061, 24m .093 >
+.092); rules 2-4 pass. **Verdict: FAIL. V42 stays the live G1 score; v4.3 is not made the default.** The FCF pillar on
+its own carries a positive but weak signal (t < 2) and adds little rank information on top of P1-P4, which already
+contain FCF/EV and FCF-vs-Treasury. It does improve the consistency of the ranking (higher t at every horizon) and the
+top-30 portfolio (better CAGR, drawdown and capture), which is reported, not acted on.
