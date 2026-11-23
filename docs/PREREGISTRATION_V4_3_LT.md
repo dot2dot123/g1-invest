@@ -59,3 +59,27 @@ Fallback (also fixed now): if v4.3 fails but V43F passes the same three tests, d
 horizons. If neither passes, V42 stays live and nothing is deployed.
 
 ## 7. Results (appended after the run; nothing above was changed)
+
+Run: pipeline/lt_features.py then pipeline/model_v43lt.py (2026-11-23 AM PST, panel through 2026-11-09). Coverage of
+universe rows 2014+: share_ch 78%, rel_roic 63%, roic_tr3 56%, rev_yoy_std 78%, alloc 59%.
+
+| h | V42 IC (t) | V43F IC (t) | V43S IC (t) | V43L IC (t) | P6 alone | P7 alone | top-decile hit V42 / V43F / v4.3 | top-decile p10/p50/p90 V42 vs v4.3 |
+|---|---|---|---|---|---|---|---|---|
+| 3m | .031 (1.96) | .031 (1.99) | .022 (1.17) | .033 (2.13) | .015 | .033 | .451 / .451 / .450 | -.141/-.011/+.122 vs -.143/-.012/+.126 |
+| 6m | .047 (2.23) | .048 (2.40) | .034 (1.34) | .049 (2.41) | .014 | .047 | .456 / .452 / .455 | -.202/-.016/+.178 vs -.209/-.017/+.183 |
+| 12m | .061 (2.27) | .062 (2.45) | .043 (1.28) | .065 (2.41) | .015 | .063 | .437 / .436 / .436 | -.293/-.032/+.251 vs -.300/-.033/+.255 |
+| 24m | .092 (2.83) | .093 (3.04) | .067 (1.66) | .095 (2.88) | .018 | .085 | .415 / .413 / .416 | -.409/-.059/+.329 vs -.408/-.058/+.342 |
+| 36m | .116 (4.05) | .115 (4.37) | .090 (2.40) | .118 (4.06) | .029 | .098 | .394 / .391 / .402 | -.478/-.086/+.407 vs -.477/-.083/+.416 |
+| 48m | .132 (4.38) | .130 (5.15) | .103 (2.33) | .135 (4.62) | .039 | .113 | .369 / .368 / .381 | -.547/-.127/+.476 vs -.545/-.116/+.520 |
+| 60m | .125 (3.23) | .124 (3.64) | .092 (1.64) | .130 (3.48) | .043 | .113 | .351 / .355 / .367 | -.606/-.174/+.538 vs -.609/-.159/+.571 |
+
+(v4.3 = V43S at 3-12m, V43L at 24-60m.) Top-30 monthly, 2014-01 to 2026-10, 10 bps/side:
+V42 CAGR 10.4%, max DD -26.1%, months beating SPY 44.4%, down capture 0.83;
+V43F 12.1%, -22.9%, 51.0%, 0.80; V43S 9.7%, -26.1%, 47.7%, 0.79; V43L 12.7%, -19.9%, 51.6%, 0.78 (SPY 13.9%, -23.9%).
+
+Decision: v4.3 FAILS rule 3 (the momentum-heavy short score V43S loses .013 IC at 6m and .018 at 12m); rules 1-2 pass.
+Fallback V43F PASSES (CAGR and drawdown better; IC gaps +.001/+.001/+.001/-.001/-.002/-.001, all within .003).
+**Deploy V43F as "G1 v4.3 (FCF)" for all horizons.** Reported, not acted on: V43L used at every horizon would have
+beaten V42's IC at all horizons and had the best top-30 result, but that configuration was not pre-registered; it is
+a candidate for a new pre-registered / forward test. P7 (leadership) is the strongest new pillar on its own; P6 (peer
+positioning proxies) is weak (t < 1).

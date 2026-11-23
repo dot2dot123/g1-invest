@@ -121,4 +121,4 @@ if __name__ == "__main__":
     json.dump(res, open(CACHE / "model_v43_results.json", "w"), indent=1, default=float)
     for h in [3] + HS:
         yc = f"yh{h}"
-        if yc in T: T[T[yc].notna()][["date", "ticker", "sector"] + VARIANTS + [f"y{h}", yc]].to_parquet(CACHE / f"oos_v43_{h}.parquet")
+        if yc in T: T[T[yc].notna()][["date", "ticker", "sector"] + VARIANTS + [f"y{h}", yc]].to_parquet(CACHE / f"oos_v43a_{h}.parquet")
